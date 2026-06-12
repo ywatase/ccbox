@@ -4,8 +4,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ripgrep ca-certificates curl procps python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# uv は apt に存在しないため、公式配布イメージからスタティックバイナリをコピーする
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# uv は apt に存在しないため、公式配布イメージからスタティックバイナリをコピーする。
+# 供給網対策としてダイジェストで固定する。更新時はタグとダイジェストを揃えて上げること。
+COPY --from=ghcr.io/astral-sh/uv:0.9@sha256:538e0b39736e7feae937a65983e49d2ab75e1559d35041f9878b7b7e51de91e4 /uv /uvx /usr/local/bin/
 
 # npm インストールは非推奨のため、公式の署名付き apt リポジトリを使用する
 # https://code.claude.com/docs/ja/setup#install-with-linux-package-managers
