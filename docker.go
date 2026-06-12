@@ -80,22 +80,7 @@ func runContainer(entryCmd string, extraArgs []string) error {
 		term = "xterm-256color"
 	}
 
-	// -i は常に付与し、-t は stdin が実端末のときのみ付与する。
-	// パイプや /dev/null 接続時に -t を付けると docker が "not a TTY" で失敗するため。
-	args := []string{"run", "--rm", "--init", "-i"}
-	if isTTY() {
-		args = append(args, "-t")
-	}
-
-	args = append(args,
-		"-v", ccboxHome+":/home/ccbox",
-		"-v", pwd+":"+pwd,
-		"-w", pwd,
-		"-e", "TERM="+term,
-		imageTag,
-		entryCmd,
-	)
-	args = append(args, extraArgs...)
+	args := buildRunArgs(entryCmd, extraArgs, ccboxHome, pwd, term, isTTY())
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
@@ -110,6 +95,33 @@ func runContainer(entryCmd string, extraArgs []string) error {
 		return err
 	}
 	return nil
+}
+
+// buildRunArgs は docker run の引数列を構築する。
+// -i は常に付与し、-t は stdin が実端末（tty=true）のときのみ付与する。
+// パイプや /dev/null 接続時に -t を付けると docker が "not a TTY" で失敗するため。
+//
+// TTY モードでは --sig-proxy=false を明示する。Ctrl+C/Ctrl+Z などの端末制御文字由来の
+// シグナルは PTY の line discipline 経由でコンテナ内プロセスに直接届くため転送は不要で、
+// macOS ではホスト側の SIGIO（ターミナルや zsh プラグインの非同期 I/O 通知）が
+// docker CLI 経由でコンテナに転送されると、Linux 側 SIGIO のデフォルト動作で
+// bash/claude が即死する（exit 157 = 128+29）ため。
+// 代償として、ccbox/docker CLI プロセスへ直接送られた SIGTERM 等もコンテナに転送されなくなる。
+// 非 TTY モードでは Ctrl+C の転送に sig-proxy が必要なのでデフォルト（有効）のままにする。
+func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool) []string {
+	args := []string{"run", "--rm", "--init", "-i"}
+	if tty {
+		args = append(args, "-t", "--sig-proxy=false")
+	}
+	args = append(args,
+		"-v", ccboxHome+":/home/ccbox",
+		"-v", pwd+":"+pwd,
+		"-w", pwd,
+		"-e", "TERM="+term,
+		imageTag,
+		entryCmd,
+	)
+	return append(args, extraArgs...)
 }
 
 // isTTY は os.Stdin が実端末かどうかを判定する。
