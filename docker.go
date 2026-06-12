@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -65,14 +66,33 @@ func runShell() error {
 
 // runContainer は指定コマンドを同一マウント構成で実行する共通関数。
 func runContainer(entryCmd string, extraArgs []string) error {
-	ccboxHome, err := ensureCcboxHome()
-	if err != nil {
-		return err
-	}
-
 	pwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("カレントディレクトリを取得できません: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("ホームディレクトリを取得できません: %w", err)
+	}
+
+	mountPwd := pwd
+	if resolved, err := filepath.EvalSymlinks(pwd); err == nil {
+		mountPwd = resolved
+	}
+	mountHome := home
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		mountHome = resolved
+	}
+	if isUnsafeMountDir(mountPwd, mountHome) {
+		if os.Getenv("CCBOX_ALLOW_UNSAFE_DIR") != "1" {
+			return errors.New("ホームディレクトリ全体がコンテナに露出するため、このディレクトリでは実行できません。意図的に実行する場合は CCBOX_ALLOW_UNSAFE_DIR=1 を設定してください")
+		}
+		fmt.Fprintln(os.Stderr, "警告: ホームディレクトリ全体がコンテナに露出するディレクトリで実行しています。")
+	}
+
+	ccboxHome, err := ensureCcboxHome()
+	if err != nil {
+		return err
 	}
 
 	term := os.Getenv("TERM")
@@ -95,6 +115,22 @@ func runContainer(entryCmd string, extraArgs []string) error {
 		return err
 	}
 	return nil
+}
+
+// isUnsafeMountDir は pwd をマウントするとホームディレクトリ全体が露出するかを判定する。
+// pwd がホームと一致またはその祖先の場合、~/.ssh やホスト側 ~/.claude の認証情報が
+// コンテナ内から読めてしまい隔離の意味がなくなるため、危険と判定する。
+func isUnsafeMountDir(pwd, home string) bool {
+	cleanPwd := filepath.Clean(pwd)
+	cleanHome := filepath.Clean(home)
+	if cleanPwd == cleanHome {
+		return true
+	}
+	rel, err := filepath.Rel(cleanPwd, cleanHome)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // buildRunArgs は docker run の引数列を構築する。

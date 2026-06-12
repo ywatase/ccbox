@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -98,6 +99,54 @@ func TestIsTerminalFile_notTTY(t *testing.T) {
 	defer w.Close()
 	if isTerminalFile(r) {
 		t.Error("isTerminalFile(pipe) = true, want false")
+	}
+}
+
+func TestIsUnsafeMountDir(t *testing.T) {
+	// ホームを含むディレクトリを mount すると認証情報が読めるため、祖先だけを危険扱いする。
+	home := filepath.Join("/", "Users", "x")
+	tests := []struct {
+		name string
+		pwd  string
+		home string
+		want bool
+	}{
+		{
+			name: "pwd が home と同じ",
+			pwd:  home,
+			home: home,
+			want: true,
+		},
+		{
+			name: "pwd が home の親",
+			pwd:  filepath.Join("/", "Users"),
+			home: home,
+			want: true,
+		},
+		{
+			name: "pwd がルート",
+			pwd:  string(filepath.Separator),
+			home: home,
+			want: true,
+		},
+		{
+			name: "pwd が home 配下",
+			pwd:  filepath.Join(home, "project"),
+			home: home,
+			want: false,
+		},
+		{
+			name: "pwd が home と無関係",
+			pwd:  filepath.Join("/", "tmp"),
+			home: home,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		got := isUnsafeMountDir(tt.pwd, tt.home)
+		if got != tt.want {
+			t.Errorf("%s: isUnsafeMountDir(%q, %q) = %v, want %v", tt.name, tt.pwd, tt.home, got, tt.want)
+		}
 	}
 }
 
