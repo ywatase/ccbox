@@ -1,8 +1,11 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ripgrep ca-certificates curl procps \
+    git ripgrep ca-certificates curl procps python3 \
     && rm -rf /var/lib/apt/lists/*
+
+# uv は apt に存在しないため、公式配布イメージからスタティックバイナリをコピーする
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # npm インストールは非推奨のため、公式の署名付き apt リポジトリを使用する
 # https://code.claude.com/docs/ja/setup#install-with-linux-package-managers
