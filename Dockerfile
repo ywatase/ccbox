@@ -1,3 +1,6 @@
+# node:22-bookworm-slim は Docker 公式イメージで、ccbox update (--pull) により
+# セキュリティパッチを取り込む運用のため、あえてダイジェスト固定しない。
+# 固定するとベースイメージのパッチ適用が止まるデメリットの方が大きい。
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
