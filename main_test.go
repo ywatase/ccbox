@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +162,18 @@ func TestBuildRunArgs_ttyMode(t *testing.T) {
 	if !slices.Contains(args, "--sig-proxy=false") {
 		t.Error("TTY モードで --sig-proxy=false が付与されていない")
 	}
+	if !slices.Contains(args, "--security-opt") {
+		t.Error("TTY モードで --security-opt が付与されていない")
+	}
+	if !slices.Contains(args, "no-new-privileges") {
+		t.Error("TTY モードで no-new-privileges が付与されていない")
+	}
+	if !slices.Contains(args, "--pids-limit") {
+		t.Error("TTY モードで --pids-limit が付与されていない")
+	}
+	if !slices.Contains(args, "1024") {
+		t.Error("TTY モードで pids limit 1024 が付与されていない")
+	}
 }
 
 func TestBuildRunArgs_nonTTYMode(t *testing.T) {
@@ -173,9 +186,94 @@ func TestBuildRunArgs_nonTTYMode(t *testing.T) {
 	if slices.Contains(args, "--sig-proxy=false") {
 		t.Error("非 TTY モードで --sig-proxy=false が付与されている")
 	}
+	if !slices.Contains(args, "--security-opt") {
+		t.Error("非 TTY モードで --security-opt が付与されていない")
+	}
+	if !slices.Contains(args, "no-new-privileges") {
+		t.Error("非 TTY モードで no-new-privileges が付与されていない")
+	}
+	if !slices.Contains(args, "--pids-limit") {
+		t.Error("非 TTY モードで --pids-limit が付与されていない")
+	}
+	if !slices.Contains(args, "1024") {
+		t.Error("非 TTY モードで pids limit 1024 が付与されていない")
+	}
 	// extraArgs は末尾に連結される。
 	if args[len(args)-2] != "-p" || args[len(args)-1] != "hi" {
 		t.Errorf("extraArgs が末尾に連結されていない: %v", args)
+	}
+}
+
+func TestRunContainerRejectsColonInPwd(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "has:colon")
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	currentWork, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldwd); err != nil {
+			t.Fatalf("作業ディレクトリを戻せません: %v", err)
+		}
+	})
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", root)
+
+	err = runContainer("bash", nil)
+	if err == nil {
+		t.Fatal("runContainer() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "パスに ':' が含まれるため docker の -v 構文で安全にマウントできません") {
+		t.Errorf("エラーメッセージに理由が含まれていない: %v", err)
+	}
+	if !strings.Contains(err.Error(), currentWork) {
+		t.Errorf("エラーメッセージに対象パスが含まれていない: %v", err)
+	}
+}
+
+func TestRunContainerRejectsColonInCcboxHome(t *testing.T) {
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	home := filepath.Join(root, "home:colon")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldwd); err != nil {
+			t.Fatalf("作業ディレクトリを戻せません: %v", err)
+		}
+	})
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", root)
+
+	err = runContainer("bash", nil)
+	if err == nil {
+		t.Fatal("runContainer() error = nil, want error")
+	}
+	wantPath := filepath.Join(home, ".ccbox", "home")
+	if !strings.Contains(err.Error(), "パスに ':' が含まれるため docker の -v 構文で安全にマウントできません") {
+		t.Errorf("エラーメッセージに理由が含まれていない: %v", err)
+	}
+	if !strings.Contains(err.Error(), wantPath) {
+		t.Errorf("エラーメッセージに対象パスが含まれていない: %v", err)
 	}
 }
 

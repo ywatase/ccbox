@@ -70,6 +70,9 @@ func runContainer(entryCmd string, extraArgs []string) error {
 	if err != nil {
 		return fmt.Errorf("カレントディレクトリを取得できません: %w", err)
 	}
+	if strings.Contains(pwd, ":") {
+		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", pwd)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("ホームディレクトリを取得できません: %w", err)
@@ -93,6 +96,9 @@ func runContainer(entryCmd string, extraArgs []string) error {
 	ccboxHome, err := ensureCcboxHome()
 	if err != nil {
 		return err
+	}
+	if strings.Contains(ccboxHome, ":") {
+		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", ccboxHome)
 	}
 
 	term := os.Getenv("TERM")
@@ -144,8 +150,10 @@ func isUnsafeMountDir(pwd, home string) bool {
 // bash/claude が即死する（exit 157 = 128+29）ため。
 // 代償として、ccbox/docker CLI プロセスへ直接送られた SIGTERM 等もコンテナに転送されなくなる。
 // 非 TTY モードでは Ctrl+C の転送に sig-proxy が必要なのでデフォルト（有効）のままにする。
+// --security-opt no-new-privileges は setuid バイナリ等によるコンテナ内権限昇格を防ぐ。
+// --pids-limit 1024 は fork bomb によるホスト資源枯渇を防ぎつつ、ビルドツールの並列 fork 余地を残す。
 func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool) []string {
-	args := []string{"run", "--rm", "--init", "-i"}
+	args := []string{"run", "--rm", "--init", "-i", "--security-opt", "no-new-privileges", "--pids-limit", "1024"}
 	if tty {
 		args = append(args, "-t", "--sig-proxy=false")
 	}
