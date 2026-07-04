@@ -4,7 +4,7 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git ripgrep ca-certificates curl procps python3 \
+    git ripgrep ca-certificates curl procps python3 vim \
     && rm -rf /var/lib/apt/lists/*
 
 # uv は apt に存在しないため、公式配布イメージからスタティックバイナリをコピーする。
