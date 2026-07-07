@@ -22,8 +22,8 @@ func dockerfileContent() *strings.Reader {
 
 // dispatchResult は引数解析の結果を表す。
 type dispatchResult struct {
-	subcommand  string   // "build" / "update" / "shell" / "version" / "help" / "claude"
-	claudeArgs  []string // claude に渡す引数（subcommand=="claude" のとき）
+	subcommand  string   // "build" / "update" / "shell" / "codex" / "ssh" / "ssh-proxy" / "ps" / "down" / "version" / "help" / "claude"
+	claudeArgs  []string // claude/codex に渡す引数、または ssh-proxy/down の対象パス
 	forceClaude bool     // -- による強制 claude 渡し
 }
 
@@ -43,6 +43,16 @@ func parseArgs(args []string) dispatchResult {
 		return dispatchResult{subcommand: "update"}
 	case "shell":
 		return dispatchResult{subcommand: "shell"}
+	case "codex":
+		return dispatchResult{subcommand: "codex", claudeArgs: args[1:]}
+	case "ssh":
+		return dispatchResult{subcommand: "ssh"}
+	case "ssh-proxy":
+		return dispatchResult{subcommand: "ssh-proxy", claudeArgs: args[1:]}
+	case "ps":
+		return dispatchResult{subcommand: "ps"}
+	case "down":
+		return dispatchResult{subcommand: "down", claudeArgs: args[1:]}
 	case "version":
 		return dispatchResult{subcommand: "version"}
 	case "help", "-h", "--help":
@@ -61,6 +71,21 @@ func main() {
 		runWithDockerCheck(false, func() error { return buildImage(true) })
 	case "shell":
 		runWithDockerCheck(true, runShell)
+	case "codex":
+		runWithDockerCheck(true, func() error { return runCodex(r.claudeArgs) })
+	case "ssh":
+		runWithDockerCheck(true, cmdSSHRegister)
+	case "ssh-proxy":
+		// stdout は SSH トランスポートのため runWithDockerCheck（自動ビルドが
+		// stdout に出力する）を経由しない。エラーは stderr のみ。
+		if err := runSSHProxy(r.claudeArgs); err != nil {
+			fmt.Fprintln(os.Stderr, "エラー:", err)
+			os.Exit(1)
+		}
+	case "ps":
+		runWithDockerCheck(false, cmdPS)
+	case "down":
+		runWithDockerCheck(false, func() error { return cmdDown(r.claudeArgs) })
 	case "version":
 		fmt.Println("ccbox", version)
 	case "help":
@@ -96,8 +121,12 @@ func runWithDockerCheck(autoBuild bool, fn func() error) {
 func printHelp() {
 	fmt.Print(`使い方:
   ccbox [claude への引数...]  Claude Code をコンテナ内で実行する（イメージがなければ自動ビルド）
+  ccbox codex [引数...]       codex をコンテナ内で実行する
+  ccbox ssh                   カレントディレクトリを Mac App から SSH 接続可能として登録する
+  ccbox ps                    SSH 用の常駐コンテナを一覧表示する
+  ccbox down [パス]           常駐コンテナを停止・削除する（省略時はカレントディレクトリ）
   ccbox build                 ccbox:latest イメージをビルドする
-  ccbox update                --no-cache --pull で再ビルドする（claude code を最新化）
+  ccbox update                --no-cache --pull で再ビルドする（claude/codex を最新化）
   ccbox shell                 同じマウント構成で bash を起動する（デバッグ用）
   ccbox version               バージョンを表示する
   ccbox help / -h / --help    このヘルプを表示する
@@ -108,7 +137,7 @@ func printHelp() {
   <カレントディレクトリ>  →  コンテナ内の同一絶対パス（作業ディレクトリ）
 
 初回認証:
-  ccbox shell で bash を起動後、claude コマンドを実行して OAuth ログインを行ってください。
-  認証情報は ~/.ccbox/home に永続化されます。
+  claude: ccbox shell で bash を起動後、claude コマンドで OAuth ログイン
+  codex:  ccbox ssh で登録後、ssh -t -L 1455:localhost:1455 <エイリアス> codex login
 `)
 }

@@ -23,9 +23,13 @@ func checkDocker() error {
 }
 
 // imageExists は ccbox:latest イメージの存在を確認する。
+// ProxyCommand 経由（最小 PATH）でも動くよう docker は絶対パス解決する。
 func imageExists() bool {
-	err := exec.Command("docker", "image", "inspect", imageTag).Run()
-	return err == nil
+	dockerPath, err := findDocker()
+	if err != nil {
+		return false
+	}
+	return exec.Command(dockerPath, "image", "inspect", imageTag).Run() == nil
 }
 
 // buildImage は Dockerfile を stdin 経由で docker build に渡してイメージをビルドする。
@@ -64,20 +68,17 @@ func runShell() error {
 	return runContainer("bash", nil)
 }
 
-// runContainer は指定コマンドを同一マウント構成で実行する共通関数。
-func runContainer(entryCmd string, extraArgs []string) error {
-	pwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("カレントディレクトリを取得できません: %w", err)
-	}
+// runCodex は ccbox:latest コンテナ内で codex を実行する。
+func runCodex(extraArgs []string) error {
+	return runContainer("codex", extraArgs)
+}
+
+// validateProjectDir は pwd をマウントしてよいか検査する（':' チェックとホーム露出ガード）。
+// 使い捨て実行（runContainer)と SSH 経路（runSSHProxy、後続の cmdSSHRegister）で共用する。
+func validateProjectDir(pwd, home string) error {
 	if strings.Contains(pwd, ":") {
 		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", pwd)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("ホームディレクトリを取得できません: %w", err)
-	}
-
 	mountPwd := pwd
 	if resolved, err := filepath.EvalSymlinks(pwd); err == nil {
 		mountPwd = resolved
@@ -91,6 +92,22 @@ func runContainer(entryCmd string, extraArgs []string) error {
 			return errors.New("ホームディレクトリ全体がコンテナに露出するため、このディレクトリでは実行できません。意図的に実行する場合は CCBOX_ALLOW_UNSAFE_DIR=1 を設定してください")
 		}
 		fmt.Fprintln(os.Stderr, "警告: ホームディレクトリ全体がコンテナに露出するディレクトリで実行しています。")
+	}
+	return nil
+}
+
+// runContainer は指定コマンドを同一マウント構成で実行する共通関数。
+func runContainer(entryCmd string, extraArgs []string) error {
+	pwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("カレントディレクトリを取得できません: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("ホームディレクトリを取得できません: %w", err)
+	}
+	if err := validateProjectDir(pwd, home); err != nil {
+		return err
 	}
 
 	ccboxHome, err := ensureCcboxHome()

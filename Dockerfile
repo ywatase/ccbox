@@ -11,6 +11,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 供給網対策としてダイジェストで固定する。更新時はタグとダイジェストを揃えて上げること。
 COPY --from=ghcr.io/astral-sh/uv:0.9@sha256:538e0b39736e7feae937a65983e49d2ab75e1559d35041f9878b7b7e51de91e4 /uv /uvx /usr/local/bin/
 
+# Mac App からの SSH 接続用。sshd は ccbox CLI が inetd モードで起動するため
+# サービスとしては有効化しない（リッスンポートを作らない）。
+# postinst が生成する /etc/ssh のホスト鍵は使わない（sshd_config で
+# ユーザー所有鍵を指定する）ため、イメージに残さず削除する。
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    && rm -f /etc/ssh/ssh_host_* \
+    && rm -rf /var/lib/apt/lists/*
+
+# codex CLI の公式配布は npm のみ。供給網対策として release cooldown（7日）を適用し、
+# 公開直後の悪意あるバージョンを避ける。ccbox update で最新化される。
+RUN npm install -g @openai/codex \
+    --before="$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')"
+
 # npm インストールは非推奨のため、公式の署名付き apt リポジトリを使用する
 # https://code.claude.com/docs/ja/setup#install-with-linux-package-managers
 RUN install -d -m 0755 /etc/apt/keyrings \

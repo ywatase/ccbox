@@ -277,6 +277,41 @@ func TestRunContainerRejectsColonInCcboxHome(t *testing.T) {
 	}
 }
 
+func TestParseArgs_newSubcommands(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want dispatchResult
+	}{
+		{"codex 単体", []string{"codex"},
+			dispatchResult{subcommand: "codex", claudeArgs: []string{}}},
+		{"codex 引数付き", []string{"codex", "レビューして"},
+			dispatchResult{subcommand: "codex", claudeArgs: []string{"レビューして"}}},
+		{"ssh", []string{"ssh"},
+			dispatchResult{subcommand: "ssh"}},
+		{"ssh-proxy パス付き", []string{"ssh-proxy", "/path/to/proj"},
+			dispatchResult{subcommand: "ssh-proxy", claudeArgs: []string{"/path/to/proj"}}},
+		{"ps", []string{"ps"},
+			dispatchResult{subcommand: "ps"}},
+		{"down パスなし", []string{"down"},
+			dispatchResult{subcommand: "down", claudeArgs: []string{}}},
+		{"down パス付き", []string{"down", "/path/to/proj"},
+			dispatchResult{subcommand: "down", claudeArgs: []string{"/path/to/proj"}}},
+		{"-- codex は claude に渡る", []string{"--", "codex"},
+			dispatchResult{subcommand: "claude", claudeArgs: []string{"codex"}, forceClaude: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseArgs(tt.args)
+			if got.subcommand != tt.want.subcommand ||
+				!slices.Equal(got.claudeArgs, tt.want.claudeArgs) ||
+				got.forceClaude != tt.want.forceClaude {
+				t.Errorf("parseArgs(%v) = %+v, want %+v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDockerfileContent(t *testing.T) {
 	r := dockerfileContent()
 	if r == nil {

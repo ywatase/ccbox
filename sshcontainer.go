@@ -1,0 +1,203 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+)
+
+// socketDirs は Unix ソケットが作られるディレクトリ。macOS バインドマウント
+// （VirtioFS）上ではソケットへの chmod が EINVAL で失敗し、Claude のリモート
+// デーモンと codex app-server が起動できないため、tmpfs で覆う必要がある。
+// 詳細: docs/superpowers/specs/2026-07-07-codex-ssh-design.md の「発見1」
+var socketDirs = []string{
+	"/home/ccbox/.claude/remote/run",
+	"/home/ccbox/.codex/app-server-control",
+}
+
+// buildPersistentRunArgs は SSH 接続用の常駐コンテナを起動する docker run 引数列。
+// セキュリティフラグは使い捨て実行（buildRunArgs）と同じ方針。
+func buildPersistentRunArgs(name, ccboxHome, projectPath string) []string {
+	args := []string{"run", "-d", "--name", name,
+		"--label", "ccbox.managed=true",
+		"--label", "ccbox.project=" + projectPath,
+		"--init",
+		"--security-opt", "no-new-privileges",
+		"--pids-limit", "1024",
+		"-v", ccboxHome + ":/home/ccbox",
+		"-v", projectPath + ":" + projectPath,
+		"-w", projectPath,
+	}
+	for _, d := range socketDirs {
+		args = append(args, "--mount", "type=tmpfs,destination="+d+",tmpfs-mode=0700")
+	}
+	return append(args, imageTag, "sleep", "infinity")
+}
+
+// chownArgs は tmpfs（root 所有でマウントされる）を ccbox ユーザーに渡す。
+// コンテナの起動・再起動のたびに tmpfs は初期化されるため毎回実行が必要。
+func chownArgs(name string) []string {
+	return append([]string{"exec", "-u", "root", name, "chown", "ccbox:"}, socketDirs...)
+}
+
+func sshProxyExecArgs(name string) []string {
+	return []string{"exec", "-i", name, "/usr/sbin/sshd", "-i", "-f", "/home/ccbox/.ssh/sshd_config"}
+}
+
+func psArgs() []string {
+	return []string{"ps", "-a", "--filter", "label=ccbox.managed=true",
+		"--format", "table {{.Names}}\t{{.Status}}\t{{.Label \"ccbox.project\"}}"}
+}
+
+func downArgs(name string) []string {
+	return []string{"rm", "-f", name}
+}
+
+// findDocker は docker CLI の絶対パスを返す。ProxyCommand として App の ssh から
+// 起動される場合は PATH が最小（/usr/bin:/bin など）のため、既知の場所も探す。
+func findDocker() (string, error) {
+	if p, err := exec.LookPath("docker"); err == nil {
+		return p, nil
+	}
+	candidates := []string{"/opt/homebrew/bin/docker", "/usr/local/bin/docker"}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".docker", "bin", "docker"))
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("docker が見つかりません。PATH または /opt/homebrew/bin を確認してください")
+}
+
+// ensureProjectContainer は常駐コンテナを必要なら起動し、コンテナ名を返す。
+// 出力は一切 stdout に出さない（ssh-proxy 経由では stdout が SSH トランスポートのため）。
+// App は同一プロジェクトへ複数の SSH 接続を同時に張るため、docker run の名前衝突
+// （並行接続が先にコンテナを作った場合）は 1 回だけ状態確認からやり直す。
+func ensureProjectContainer(dockerPath, projectPath, ccboxHome string) (string, error) {
+	name := containerName(projectPath)
+	for attempt := 0; ; attempt++ {
+		out, err := exec.Command(dockerPath, "inspect", "-f", "{{.State.Running}}", name).Output()
+		switch {
+		case err == nil && strings.TrimSpace(string(out)) == "true":
+			// 実行中でも chown は毎回行う。ユーザーの docker restart で tmpfs が
+			// root 所有に初期化されている可能性があり、chown は冪等で安価なため。
+		case err == nil:
+			// 存在するが停止中 → 再開。tmpfs は初期化されるので chown もやり直す
+			if err := runQuiet(dockerPath, "start", name); err != nil {
+				return "", fmt.Errorf("コンテナ %s を再開できません: %w", name, err)
+			}
+		default:
+			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath)...); err != nil {
+				if attempt == 0 {
+					continue
+				}
+				return "", fmt.Errorf("コンテナ %s を起動できません: %w", name, err)
+			}
+		}
+		if err := runQuiet(dockerPath, chownArgs(name)...); err != nil {
+			return "", fmt.Errorf("ソケットディレクトリの所有者変更に失敗しました: %w", err)
+		}
+		return name, nil
+	}
+}
+
+// runQuiet は docker コマンドを stdout を捨てて実行する（stderr は診断用に通す）。
+func runQuiet(dockerPath string, args ...string) error {
+	cmd := exec.Command(dockerPath, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runSSHProxy は ProxyCommand 本体。常駐コンテナを保証してから自プロセスを
+// docker exec sshd -i に置き換える（exec なので SSH のシグナル・EOF 伝搬が素直になる）。
+func runSSHProxy(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("使い方: ccbox ssh-proxy <プロジェクトの絶対パス>")
+	}
+	projectPath := args[0]
+	if !filepath.IsAbs(projectPath) {
+		return fmt.Errorf("プロジェクトパスは絶対パスで指定してください: %s", projectPath)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("ホームディレクトリを取得できません: %w", err)
+	}
+	if err := validateProjectDir(projectPath, home); err != nil {
+		return err
+	}
+	if err := validateSSHProjectPath(projectPath); err != nil {
+		return err
+	}
+
+	dockerPath, err := findDocker()
+	if err != nil {
+		return err
+	}
+	if !imageExists() {
+		return fmt.Errorf("%s イメージが見つかりません（Docker daemon が停止している可能性もあります）。docker info を確認し、必要なら ccbox build を実行してください", imageTag)
+	}
+	ccboxHome, err := ensureCcboxHome()
+	if err != nil {
+		return err
+	}
+	if strings.Contains(ccboxHome, ":") {
+		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", ccboxHome)
+	}
+	name, err := ensureProjectContainer(dockerPath, projectPath, ccboxHome)
+	if err != nil {
+		return err
+	}
+	execArgs := append([]string{dockerPath}, sshProxyExecArgs(name)...)
+	return syscall.Exec(dockerPath, execArgs, os.Environ())
+}
+
+// cmdPS は ccbox 管理の常駐コンテナを一覧表示する。
+func cmdPS() error {
+	dockerPath, err := findDocker()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(dockerPath, psArgs()...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// cmdDown は常駐コンテナを停止・削除する。引数省略時はカレントディレクトリが対象。
+func cmdDown(args []string) error {
+	var projectPath string
+	switch len(args) {
+	case 0:
+		pwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("カレントディレクトリを取得できません: %w", err)
+		}
+		projectPath = pwd
+	case 1:
+		abs, err := filepath.Abs(args[0])
+		if err != nil {
+			return err
+		}
+		projectPath = abs
+	default:
+		return fmt.Errorf("使い方: ccbox down [プロジェクトパス]")
+	}
+
+	dockerPath, err := findDocker()
+	if err != nil {
+		return err
+	}
+	name := containerName(projectPath)
+	if err := runQuiet(dockerPath, downArgs(name)...); err != nil {
+		return fmt.Errorf("コンテナ %s を削除できません（存在しない場合もこのエラーになります）: %w", name, err)
+	}
+	fmt.Printf("停止・削除しました: %s\n", name)
+	return nil
+}
