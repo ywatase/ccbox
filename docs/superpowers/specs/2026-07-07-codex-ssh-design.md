@@ -1,7 +1,7 @@
 # 設計: ccbox への codex 追加 + Mac App からの SSH 接続対応
 
 日付: 2026-07-07
-ステータス: 承認済み（Phase 0 PoC から着手）
+ステータス: 承認済み・Phase 0 PoC 完了（Claude App / Codex App とも接続成功を実機確認）
 
 ## 目的
 
@@ -123,3 +123,60 @@ codex login                                # 表示された URL を Mac のブ�
   3. Claude App からも接続できるか
   4. ポートフォワーディング（`-L`）が動くか
 - Go 実装: エイリアス生成・config 生成・引数解析をユニットテストでカバー（既存スタイル踏襲）
+
+## Phase 0 PoC の結果（2026-07-07 実施、全項目成功）
+
+`ssh` CLI・Claude App・Codex App のすべてから接続成功。ただし以下の問題を踏み、
+設計に追加要件が入った。
+
+### 発見1: VirtioFS 上の Unix ソケットへの chmod は EINVAL で失敗する（最重要）
+
+macOS バインドマウント（VirtioFS）上では、Unix ドメインソケットの作成・接続はできるが
+**ソケットファイルへの chmod が `EINVAL` で失敗する**。これにより:
+
+- Claude App: リモートデーモンが `~/.claude/remote/run/<id>/rpc.sock` の chmod に失敗して死亡
+  （症状: `timeout waiting for daemon to accept`）
+- Codex App: app-server が `~/.codex/app-server-control/` のソケット chmod に失敗して死亡
+  （症状: `socket hang up` / ログに `Error: Invalid argument (os error 22)`）
+
+**対策（実装要件）**: 常駐コンテナ起動時にソケットが作られるディレクトリを tmpfs で覆う。
+
+```sh
+--mount type=tmpfs,destination=/home/ccbox/.claude/remote/run,tmpfs-mode=0700
+--mount type=tmpfs,destination=/home/ccbox/.codex/app-server-control,tmpfs-mode=0700
+```
+
+tmpfs は root 所有でマウントされるため、起動直後に
+`docker exec -u root <name> chown ccbox:ccbox <両ディレクトリ>` を実行する。
+ソケット・トークン・ロックは実行時状態なので tmpfs（非永続）で問題ない。
+auth.json や sqlite 等の永続状態はバインドマウント側に残る。
+
+### 発見2: ユーザーの ControlMaster 設定が接続に相乗りする
+
+ユーザーの ssh 設定に `ControlMaster auto` + `ControlPersist` があると、
+ターミナル・Claude App・Codex App の接続が 1 本の sshd セッションに多重化される。
+動作はするが、(a) sshd_config の変更が既存マスターに反映されない、
+(b) コンテナ再作成後に stale なマスターソケットが残り
+「ControlSocket ... already exists, disabling multiplexing」警告が出る、という運用上の注意がある。
+
+**対策（実装要件）**: ccbox 管理の Host エントリに `ControlMaster no` と
+`ControlPath none` を明示し、ccbox 接続を多重化の対象外にする
+（コンテナのライフサイクルと ssh マスターの生存期間がずれるため）。
+
+### 発見3: Claude App がアップロードする server バイナリの実行ビット
+
+初回接続時、Claude App が sftp でアップロードした
+`~/.claude/remote/srv/<hash>/server` に実行ビットが付かず
+`Permission denied` になった（隣の `ccd-cli` には付いていた）。
+手動 `chmod +x` 後は再発しておらず、原因は App 側の挙動か VirtioFS の
+タイミング問題か特定できていない。**再発時の既知の対処として README/トラブルシューティングに記載する**。
+
+### その他の確認事項
+
+- 非 root sshd（inetd モード、ユーザー所有ホスト鍵）は問題なく動作
+- `codex login` は `ssh -t -L 1455:localhost:1455 <host> codex login` で完結
+  （`codex login --device-auth` でも可）
+- VirtioFS 上でも flock・共有 mmap・sqlite WAL・ソケット往復・バイナリ実行は正常動作
+  （壊れるのはソケットへの chmod のみ）
+- npm の release cooldown は `--before="$(date -u -d '7 days ago' ...)"` で機能
+  （PoC 時点: latest 0.142.5 に対し 0.142.4 が入った）
