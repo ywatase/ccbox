@@ -147,6 +147,19 @@ USER ccbox
 
 複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。
 
+## UX 設定の read-only bind mount
+
+ホストの `~/.tmux.conf` は自動でコンテナ側 `/home/ccbox/.tmux.conf` に **read-only** で bind mount される。ホームディレクトリ全体を露出させずに、tmux のキーバインドや外観設定だけをコンテナと共有するための機構。
+
+**対象（デフォルト）:** `~/.tmux.conf`
+
+**禁止リスト（bind mount しない）:**
+- `~/.ssh/*` / `~/.gnupg/*` / `~/.aws/*`
+- `~/.config/gh` / `~/.config/glab-cli`
+- `~/.gitconfig`（credential.helper 経由で GitHub 権限が漏れる可能性）
+
+シンボリックリンクの解決先が禁止リストに触れる場合も拒否する。存在しないファイルは黙ってスキップされる。将来的にホワイトリスト追加のための `~/.ccbox/config.yaml` を導入予定（現状はデフォルトのみ）。
+
 ## 制限事項
 
 - SSH 接続はコンテナ内 sshd を経由する。接続できるのはこの Mac のローカルユーザーのみ（ポート非公開、`docker exec` 経由）

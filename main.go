@@ -167,6 +167,7 @@ func printHelp() {
 マウント構成:
   ~/.ccbox/home  →  コンテナの /home/ccbox（セッション・認証情報の永続化）
   <カレントディレクトリ>  →  コンテナ内の同一絶対パス（作業ディレクトリ）
+  ~/.tmux.conf   →  /home/ccbox/.tmux.conf（read-only、存在時のみ）
 
 初回認証:
   claude: ccbox shell で bash を起動後、claude コマンドで OAuth ログイン

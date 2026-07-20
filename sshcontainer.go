@@ -20,7 +20,8 @@ var socketDirs = []string{
 
 // buildPersistentRunArgs は SSH 接続用の常駐コンテナを起動する docker run 引数列。
 // セキュリティフラグは使い捨て実行（buildRunArgs）と同じ方針。
-func buildPersistentRunArgs(name, ccboxHome, projectPath string) []string {
+// uxBinds は UX 設定の read-only bind mount 引数列。
+func buildPersistentRunArgs(name, ccboxHome, projectPath string, uxBinds []string) []string {
 	args := []string{"run", "-d", "--name", name,
 		"--label", "ccbox.managed=true",
 		"--label", "ccbox.project=" + projectPath,
@@ -31,6 +32,8 @@ func buildPersistentRunArgs(name, ccboxHome, projectPath string) []string {
 		"-v", projectPath + ":" + projectPath,
 		"-w", projectPath,
 	}
+	// UX 設定の bind mount（~/.ccbox/home 上への重ね塗り）
+	args = append(args, uxBinds...)
 	for _, d := range socketDirs {
 		args = append(args, "--mount", "type=tmpfs,destination="+d+",tmpfs-mode=0700")
 	}
@@ -78,7 +81,8 @@ func findDocker() (string, error) {
 // 出力は一切 stdout に出さない（ssh-proxy 経由では stdout が SSH トランスポートのため）。
 // App は同一プロジェクトへ複数の SSH 接続を同時に張るため、docker run の名前衝突
 // （並行接続が先にコンテナを作った場合）は 1 回だけ状態確認からやり直す。
-func ensureProjectContainer(dockerPath, projectPath, ccboxHome string) (string, error) {
+// uxBinds は UX 設定 bind mount 引数列。
+func ensureProjectContainer(dockerPath, projectPath, ccboxHome string, uxBinds []string) (string, error) {
 	name := containerName(projectPath)
 	for attempt := 0; ; attempt++ {
 		out, err := exec.Command(dockerPath, "inspect", "-f", "{{.State.Running}}", name).Output()
@@ -92,7 +96,7 @@ func ensureProjectContainer(dockerPath, projectPath, ccboxHome string) (string, 
 				return "", fmt.Errorf("コンテナ %s を再開できません: %w", name, err)
 			}
 		default:
-			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath)...); err != nil {
+			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath, uxBinds)...); err != nil {
 				if attempt == 0 {
 					continue
 				}
@@ -150,7 +154,8 @@ func runSSHProxy(args []string) error {
 	if strings.Contains(ccboxHome, ":") {
 		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", ccboxHome)
 	}
-	name, err := ensureProjectContainer(dockerPath, projectPath, ccboxHome)
+	uxBinds := uxBindMountArgs(home, uxWhitelistDefault)
+	name, err := ensureProjectContainer(dockerPath, projectPath, ccboxHome, uxBinds)
 	if err != nil {
 		return err
 	}

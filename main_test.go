@@ -155,7 +155,7 @@ func TestBuildRunArgs_ttyMode(t *testing.T) {
 	// TTY モードでは -t と --sig-proxy=false が必須。
 	// sig-proxy が有効のままだとホスト側 SIGIO が転送されてコンテナ内プロセスが
 	// exit 157 で即死する（macOS + colima で実発生）。
-	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true)
+	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true, nil)
 	if !slices.Contains(args, "-t") {
 		t.Error("TTY モードで -t が付与されていない")
 	}
@@ -179,7 +179,7 @@ func TestBuildRunArgs_ttyMode(t *testing.T) {
 func TestBuildRunArgs_nonTTYMode(t *testing.T) {
 	// 非 TTY モードでは -t を付けず（docker が "not a TTY" で失敗するため）、
 	// Ctrl+C 転送に sig-proxy が必要なので --sig-proxy=false も付けない。
-	args := buildRunArgs("claude", []string{"-p", "hi"}, "/h/.ccbox/home", "/work", "xterm", false)
+	args := buildRunArgs("claude", []string{"-p", "hi"}, "/h/.ccbox/home", "/work", "xterm", false, nil)
 	if slices.Contains(args, "-t") {
 		t.Error("非 TTY モードで -t が付与されている")
 	}

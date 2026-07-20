@@ -190,7 +190,8 @@ func runContainer(entryCmd string, extraArgs []string) error {
 		term = "xterm-256color"
 	}
 
-	args := buildRunArgs(entryCmd, extraArgs, ccboxHome, pwd, term, isTTY())
+	uxBinds := uxBindMountArgs(home, uxWhitelistDefault)
+	args := buildRunArgs(entryCmd, extraArgs, ccboxHome, pwd, term, isTTY(), uxBinds)
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
@@ -236,7 +237,7 @@ func isUnsafeMountDir(pwd, home string) bool {
 // 非 TTY モードでは Ctrl+C の転送に sig-proxy が必要なのでデフォルト（有効）のままにする。
 // --security-opt no-new-privileges は setuid バイナリ等によるコンテナ内権限昇格を防ぐ。
 // --pids-limit 1024 は fork bomb によるホスト資源枯渇を防ぎつつ、ビルドツールの並列 fork 余地を残す。
-func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool) []string {
+func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool, uxBinds []string) []string {
 	args := []string{"run", "--rm", "--init", "-i", "--security-opt", "no-new-privileges", "--pids-limit", "1024"}
 	if tty {
 		args = append(args, "-t", "--sig-proxy=false")
@@ -244,6 +245,11 @@ func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term stri
 	args = append(args,
 		"-v", ccboxHome+":/home/ccbox",
 		"-v", pwd+":"+pwd,
+	)
+	// UX 設定の read-only bind mount（~/.ccbox/home の上に重ねる。read-only なので
+	// コンテナ側の書き込みはホストに反映されない）
+	args = append(args, uxBinds...)
+	args = append(args,
 		"-w", pwd,
 		"-e", "TERM="+term,
 		imageTag,
