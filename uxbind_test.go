@@ -142,7 +142,7 @@ func TestBuildRunArgs_includesUXBinds(t *testing.T) {
 
 func TestBuildPersistentRunArgs_includesUXBinds(t *testing.T) {
 	uxBinds := []string{"-v", "/Users/x/.tmux.conf:/home/ccbox/.tmux.conf:ro"}
-	args := buildPersistentRunArgs("ccbox-x-11112222", "/h/.ccbox/home", "/work", uxBinds)
+	args := buildPersistentRunArgs("ccbox-x-11112222", "/h/.ccbox/home", "/work", uxBinds, nil)
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "/Users/x/.tmux.conf:/home/ccbox/.tmux.conf:ro") {
 		t.Errorf("uxBinds が反映されていない: %v", args)

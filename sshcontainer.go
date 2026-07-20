@@ -21,7 +21,8 @@ var socketDirs = []string{
 // buildPersistentRunArgs は SSH 接続用の常駐コンテナを起動する docker run 引数列。
 // セキュリティフラグは使い捨て実行（buildRunArgs）と同じ方針。
 // uxBinds は UX 設定の read-only bind mount 引数列。
-func buildPersistentRunArgs(name, ccboxHome, projectPath string, uxBinds []string) []string {
+// extraMounts は projects.yaml 由来の追加マウント引数列（-v ペア列）。
+func buildPersistentRunArgs(name, ccboxHome, projectPath string, uxBinds, extraMounts []string) []string {
 	args := []string{"run", "-d", "--name", name,
 		"--label", "ccbox.managed=true",
 		"--label", "ccbox.project=" + projectPath,
@@ -32,6 +33,8 @@ func buildPersistentRunArgs(name, ccboxHome, projectPath string, uxBinds []strin
 		"-v", projectPath + ":" + projectPath,
 		"-w", projectPath,
 	}
+	// projects.yaml 由来の追加マウント
+	args = append(args, extraMounts...)
 	// UX 設定の bind mount（~/.ccbox/home 上への重ね塗り）
 	args = append(args, uxBinds...)
 	for _, d := range socketDirs {
@@ -82,7 +85,10 @@ func findDocker() (string, error) {
 // App は同一プロジェクトへ複数の SSH 接続を同時に張るため、docker run の名前衝突
 // （並行接続が先にコンテナを作った場合）は 1 回だけ状態確認からやり直す。
 // uxBinds は UX 設定 bind mount 引数列。
-func ensureProjectContainer(dockerPath, projectPath, ccboxHome string, uxBinds []string) (string, error) {
+// extraMounts は projects.yaml 追加マウント引数列。
+// 既に実行中/停止中のコンテナは再作成せずそのまま使うため、projects.yaml を変更した
+// 場合は `ccbox down && ccbox ssh` で作り直す必要がある（README に明記）。
+func ensureProjectContainer(dockerPath, projectPath, ccboxHome string, uxBinds, extraMounts []string) (string, error) {
 	name := containerName(projectPath)
 	for attempt := 0; ; attempt++ {
 		out, err := exec.Command(dockerPath, "inspect", "-f", "{{.State.Running}}", name).Output()
@@ -96,7 +102,7 @@ func ensureProjectContainer(dockerPath, projectPath, ccboxHome string, uxBinds [
 				return "", fmt.Errorf("コンテナ %s を再開できません: %w", name, err)
 			}
 		default:
-			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath, uxBinds)...); err != nil {
+			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath, uxBinds, extraMounts)...); err != nil {
 				if attempt == 0 {
 					continue
 				}
@@ -155,7 +161,11 @@ func runSSHProxy(args []string) error {
 		return fmt.Errorf("パスに ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", ccboxHome)
 	}
 	uxBinds := uxBindMountArgs(home, uxWhitelistDefault)
-	name, err := ensureProjectContainer(dockerPath, projectPath, ccboxHome, uxBinds)
+	extraMounts, err := loadExtraMountArgs(home)
+	if err != nil {
+		return err
+	}
+	name, err := ensureProjectContainer(dockerPath, projectPath, ccboxHome, uxBinds, extraMounts)
 	if err != nil {
 		return err
 	}

@@ -55,6 +55,8 @@ func parseArgs(args []string) dispatchResult {
 		return dispatchResult{subcommand: "ps"}
 	case "down":
 		return dispatchResult{subcommand: "down", claudeArgs: args[1:]}
+	case "mount":
+		return dispatchResult{subcommand: "mount", claudeArgs: args[1:]}
 	case "version":
 		return dispatchResult{subcommand: "version"}
 	case "help", "-h", "--help":
@@ -114,6 +116,12 @@ func main() {
 		runWithDockerCheck(false, cmdPS)
 	case "down":
 		runWithDockerCheck(false, func() error { return cmdDown(r.claudeArgs) })
+	case "mount":
+		// mount は Docker daemon に触らないので checkDocker をスキップ
+		if err := runMount(r.claudeArgs); err != nil {
+			fmt.Fprintln(os.Stderr, "エラー:", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Println("ccbox", version)
 	case "help":
@@ -154,6 +162,10 @@ func printHelp() {
   ccbox ssh                   カレントディレクトリを Mac App から SSH 接続可能として登録する
   ccbox ps                    SSH 用の常駐コンテナを一覧表示する
   ccbox down [パス]           常駐コンテナを停止・削除する（省略時はカレントディレクトリ）
+  ccbox mount add <host> [--container <path>] [--ro]
+                              常駐コンテナに追加マウントを登録する（~/.ccbox/projects.yaml）
+  ccbox mount rm <host>       追加マウントを削除する
+  ccbox mount list            追加マウント一覧を表示する
   ccbox build [--extra <path>] [--tag <name>]
                               ccbox:latest イメージをビルドする
                               --extra 省略時は ~/.ccbox/extra.Dockerfile があれば自動連結する

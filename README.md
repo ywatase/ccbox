@@ -147,6 +147,29 @@ USER ccbox
 
 複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。
 
+## マルチプロジェクトマウント（常駐コンテナのみ）
+
+`ccbox ssh` で起動する常駐コンテナには、`~/.ccbox/projects.yaml` 経由で追加のディレクトリを bind mount できる。隣接プロジェクトの参照や、`~/Desktop` などのスクリーンショット共有ディレクトリをコンテナに見せるための機構。
+
+```sh
+# ホスト側の絶対パス（同一絶対パスで mount される）
+ccbox mount add /Users/x/git/github.com/other-org/other-repo
+
+# 別のコンテナパスを明示指定 / read-only
+ccbox mount add /Users/x/Desktop --container /Users/x/Desktop --ro
+
+# 現在の登録一覧
+ccbox mount list
+
+# 削除
+ccbox mount rm /Users/x/Desktop
+```
+
+**制約:**
+- 使い捨て実行（`ccbox` / `ccbox shell` / `ccbox codex`）には反映されない。カレントディレクトリだけを mount する原則を維持
+- 各エントリはホームディレクトリ露出ガード・`:` チェック・存在確認をパスした場合のみ有効化される。不正なエントリはロード時に stderr へ警告を出しつつスキップし、他のエントリは有効化される
+- **projects.yaml を変更した後は `ccbox down && ccbox ssh` で常駐コンテナを作り直すこと。**既存コンテナは再作成せずそのまま使うため、追加/削除は次回起動時にしか反映されない
+
 ## UX 設定の read-only bind mount
 
 ホストの `~/.tmux.conf` は自動でコンテナ側 `/home/ccbox/.tmux.conf` に **read-only** で bind mount される。ホームディレクトリ全体を露出させずに、tmux のキーバインドや外観設定だけをコンテナと共有するための機構。

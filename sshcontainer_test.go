@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildPersistentRunArgs(t *testing.T) {
-	got := buildPersistentRunArgs("ccbox-myapp-abc12345", "/Users/foo/.ccbox/home", "/Users/foo/myapp", nil)
+	got := buildPersistentRunArgs("ccbox-myapp-abc12345", "/Users/foo/.ccbox/home", "/Users/foo/myapp", nil, nil)
 
 	for _, want := range [][]string{
 		{"run", "-d", "--name", "ccbox-myapp-abc12345"},
