@@ -20,6 +20,22 @@ Claude Code が実行中にホストのファイルシステムを変更した�
 
 カレントディレクトリをコンテナ内の **同一の絶対パス** に mount することで、Claude Code がセッション識別に使うパスエンコード（`~/.claude/projects/` 以下）がプロジェクト間で衝突しない。
 
+### 認証・状態の独立永続化
+
+コンテナ内の認証・状態は `~/.ccbox/home` 配下に集約し、**ホスト側の同名設定は一切参照しない**。ホストの `~/.gitconfig` の credential.helper 経由で GitHub 権限が漏れる・ホストの `~/.ssh` を丸ごとコンテナに露出させる、といった隔離破壊を防ぐため。
+
+| 種別 | 例 | 永続化先 |
+|---|---|---|
+| 認証情報 | `.claude/.credentials.json`, `.codex/`, `.config/gh`, `.config/glab-cli` | `~/.ccbox/home/` 配下（各同名パス） |
+| SSH 鍵材料 | Mac App からの接続に使う鍵ペア | `~/.ccbox/ssh/`（クライアント側）と `~/.ccbox/home/.ssh/`（コンテナ側） |
+| git identity | `.gitconfig` | `~/.ccbox/home/.gitconfig`（コンテナ内で `git config --global user.email` を別 identity に設定すればコンテナ発コミットが識別可能） |
+
+**運用上の含意:**
+- ホスト側で `gh auth login` 済みでも、コンテナ内では別途認証が必要（`ssh` 経由で `gh auth login` するか、fine-grained PAT を張る）
+- ホスト側 `~/.gitconfig` の `[include]` や `credential.helper` の設定は無視される。コンテナ内 git ではコンテナ内 `~/.gitconfig` のみ有効
+
+`~/.ccbox/` ディレクトリ以外に ccbox が書き込むホスト側パスは、`~/.ssh/config` 先頭に追記する `Include ~/.ccbox/ssh/config` の 1 行のみ（`ccbox ssh` の初回に確認あり）。
+
 **ホームディレクトリ露出ガード:** ホームディレクトリ自身やその祖先（`~`、`/Users`、`/` など）で実行すると、`~/.ssh` やホスト側 `~/.claude` の認証情報がコンテナに露出して隔離が無意味になるため、エラーで中止する。リスクを理解した上で実行する場合は `CCBOX_ALLOW_UNSAFE_DIR=1` を設定する。
 
 ## インストール
