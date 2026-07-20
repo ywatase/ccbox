@@ -25,6 +25,8 @@ type dispatchResult struct {
 	subcommand  string   // "build" / "update" / "shell" / "codex" / "ssh" / "ssh-proxy" / "ps" / "down" / "version" / "help" / "claude"
 	claudeArgs  []string // claude/codex に渡す引数、または ssh-proxy/down の対象パス
 	forceClaude bool     // -- による強制 claude 渡し
+	extraPath   string   // build/update の --extra <path>（空=自動探索）
+	tag         string   // build/update の --tag <name>（空=imageTag デフォルト）
 }
 
 // parseArgs はサブコマンド判定を行う。
@@ -38,9 +40,9 @@ func parseArgs(args []string) dispatchResult {
 	}
 	switch args[0] {
 	case "build":
-		return dispatchResult{subcommand: "build"}
+		return parseBuildFlags("build", args[1:])
 	case "update":
-		return dispatchResult{subcommand: "update"}
+		return parseBuildFlags("update", args[1:])
 	case "shell":
 		return dispatchResult{subcommand: "shell"}
 	case "codex":
@@ -62,13 +64,39 @@ func parseArgs(args []string) dispatchResult {
 	}
 }
 
+// parseBuildFlags は build/update サブコマンドのフラグ（--extra <path>, --tag <name>）を解析する。
+// 不明フラグや値欠落は "help" にフォールバックせず、error 相当として build/update をそのまま返す
+// （実行時に buildImage 側でパスの存在確認等が走る）。
+func parseBuildFlags(sub string, args []string) dispatchResult {
+	r := dispatchResult{subcommand: sub}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--extra":
+			if i+1 >= len(args) {
+				// 値が無い場合は help にフォールバックせず、そのまま返す（呼び出し側で扱う想定）
+				r.extraPath = ""
+				return r
+			}
+			r.extraPath = args[i+1]
+			i++
+		case "--tag":
+			if i+1 >= len(args) {
+				return r
+			}
+			r.tag = args[i+1]
+			i++
+		}
+	}
+	return r
+}
+
 func main() {
 	r := parseArgs(os.Args[1:])
 	switch r.subcommand {
 	case "build":
-		runWithDockerCheck(false, func() error { return buildImage(false) })
+		runWithDockerCheck(false, func() error { return buildImage(false, r.extraPath, r.tag) })
 	case "update":
-		runWithDockerCheck(false, func() error { return buildImage(true) })
+		runWithDockerCheck(false, func() error { return buildImage(true, r.extraPath, r.tag) })
 	case "shell":
 		runWithDockerCheck(true, runShell)
 	case "codex":
@@ -106,7 +134,8 @@ func runWithDockerCheck(autoBuild bool, fn func() error) {
 
 	if autoBuild && !imageExists() {
 		fmt.Fprintln(os.Stderr, "ccbox:latest イメージが見つかりません。自動ビルドを開始します...")
-		if err := buildImage(false); err != nil {
+		// 自動ビルドでも ~/.ccbox/extra.Dockerfile があれば拾う（拡張ユーザーの意図を尊重）
+		if err := buildImage(false, "", ""); err != nil {
 			fmt.Fprintln(os.Stderr, "エラー: イメージのビルドに失敗しました:", err)
 			os.Exit(1)
 		}
@@ -125,8 +154,11 @@ func printHelp() {
   ccbox ssh                   カレントディレクトリを Mac App から SSH 接続可能として登録する
   ccbox ps                    SSH 用の常駐コンテナを一覧表示する
   ccbox down [パス]           常駐コンテナを停止・削除する（省略時はカレントディレクトリ）
-  ccbox build                 ccbox:latest イメージをビルドする
-  ccbox update                --no-cache --pull で再ビルドする（claude/codex を最新化）
+  ccbox build [--extra <path>] [--tag <name>]
+                              ccbox:latest イメージをビルドする
+                              --extra 省略時は ~/.ccbox/extra.Dockerfile があれば自動連結する
+  ccbox update [--extra <path>] [--tag <name>]
+                              --no-cache --pull で再ビルドする（claude/codex を最新化）
   ccbox shell                 同じマウント構成で bash を起動する（デバッグ用）
   ccbox version               バージョンを表示する
   ccbox help / -h / --help    このヘルプを表示する

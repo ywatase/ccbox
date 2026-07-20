@@ -89,6 +89,10 @@ ccbox down [パス]      # 常駐コンテナの停止・削除
 ccbox build            # ccbox:latest をビルド
 ccbox update           # --no-cache --pull で再ビルド（claude code を最新化）
 
+# 拡張ビルド（tmux/gh/glab などを追加インストール）
+ccbox build --extra ~/.ccbox/extra.Dockerfile
+ccbox build --tag ccbox:myextra    # 別タグにビルド
+
 # デバッグ
 ccbox shell            # 同じマウント構成で bash を起動
 
@@ -119,6 +123,29 @@ ssh -t -L 1455:localhost:1455 ccbox-myapp codex login
 - **Claude App で `Permission denied` (server)**: アップロードされた `~/.ccbox/home/.claude/remote/srv/<hash>/server` に実行ビットが付かないことが稀にある。`chmod +x ~/.ccbox/home/.claude/remote/srv/*/server` で解消する
 - **`disabling multiplexing` 警告**: ユーザー側 ssh 設定の ControlMaster の stale ソケット。`rm ~/.ssh/mux-*`（該当ファイル）で解消する。ccbox 管理エントリ自体は多重化を無効にしている
 - **`timeout waiting for daemon` / `socket hang up`**: コンテナが古い構成で動いている可能性がある。`ccbox down && ccbox ssh` で作り直す
+
+## 拡張ビルドレイヤー
+
+`~/.ccbox/extra.Dockerfile` があれば、`ccbox build` / `ccbox update` は本体 Dockerfile の後ろに自動連結してビルドする。tmux/gh/glab など追加パッケージを ccbox の Dockerfile を fork せずに乗せるための機構。
+
+**制約:**
+- ビルドコンテキストは張らない（本体と同じ `docker build -` のまま）。extra.Dockerfile 内で `COPY <hostfile>` はできない。追加ファイルは `RUN curl -fsSL <URL> -o /tmp/x` のようにオンライン取得すること
+- extra.Dockerfile の内容は ccbox 側で検証しない（ユーザー責任）。ホストの root 相当を要求するようなセットアップを入れないこと
+- 明示指定 `--extra <path>` の場合はファイル存在必須（無ければエラー）。自動探索 `--extra` 省略時は無ければ本体のみでビルドする
+
+**例:**
+
+```dockerfile
+# ~/.ccbox/extra.Dockerfile
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tmux inotify-tools python3-venv jq vim xxd keychain locales \
+    && sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen \
+    && rm -rf /var/lib/apt/lists/*
+USER ccbox
+```
+
+複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。
 
 ## 制限事項
 
