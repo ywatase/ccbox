@@ -22,14 +22,14 @@ func checkDocker() error {
 	return nil
 }
 
-// imageExists は ccbox:latest イメージの存在を確認する。
+// imageExists は実行対象イメージ（runtimeImage）が存在するか確認する。
 // ProxyCommand 経由（最小 PATH）でも動くよう docker は絶対パス解決する。
 func imageExists() bool {
 	dockerPath, err := findDocker()
 	if err != nil {
 		return false
 	}
-	return exec.Command(dockerPath, "image", "inspect", imageTag).Run() == nil
+	return exec.Command(dockerPath, "image", "inspect", runtimeImage()).Run() == nil
 }
 
 // buildImage は Dockerfile を stdin 経由で docker build に渡してイメージをビルドする。
@@ -252,7 +252,7 @@ func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term stri
 	args = append(args,
 		"-w", pwd,
 		"-e", "TERM="+term,
-		imageTag,
+		runtimeImage(),
 		entryCmd,
 	)
 	return append(args, extraArgs...)

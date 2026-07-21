@@ -10,7 +10,19 @@ import (
 // version は -ldflags "-X main.version=x.y.z" で上書き可能。
 var version = "dev"
 
+// imageTag は build のデフォルトタグ。CCBOX_IMAGE が実行時のみ効くのは、
+// 「build 出力先」と「実行対象」を混ぜないため（ビルドは常に既知タグに集約）。
 const imageTag = "ccbox:latest"
+
+// runtimeImage は使い捨て・常駐コンテナで docker run に渡すイメージ名を返す。
+// CCBOX_IMAGE 環境変数で上書き可能。ccbox build --tag ccbox:myextra で作成した
+// 別イメージを CCBOX_IMAGE=ccbox:myextra ccbox のように呼び出すための機構。
+func runtimeImage() string {
+	if env := os.Getenv("CCBOX_IMAGE"); env != "" {
+		return env
+	}
+	return imageTag
+}
 
 //go:embed Dockerfile
 var embeddedDockerfile []byte
@@ -152,6 +164,14 @@ func runWithDockerCheck(autoBuild bool, fn func() error) {
 	}
 
 	if autoBuild && !imageExists() {
+		ri := runtimeImage()
+		if ri != imageTag {
+			// CCBOX_IMAGE で指定されたカスタムイメージは自動ビルドできない。
+			// build のデフォルトタグ (ccbox:latest) と一致しないため、明示的にビルドを促す。
+			fmt.Fprintf(os.Stderr, "エラー: イメージ %s が見つかりません。\n", ri)
+			fmt.Fprintf(os.Stderr, "ccbox build --tag %s [--extra <path>] で作成してください。\n", ri)
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "ccbox:latest イメージが見つかりません。自動ビルドを開始します...")
 		// 自動ビルドでも ~/.ccbox/extra.Dockerfile があれば拾う（拡張ユーザーの意図を尊重）
 		if err := buildImage(false, "", ""); err != nil {

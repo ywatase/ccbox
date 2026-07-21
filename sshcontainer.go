@@ -40,7 +40,7 @@ func buildPersistentRunArgs(name, ccboxHome, projectPath string, uxBinds, extraM
 	for _, d := range socketDirs {
 		args = append(args, "--mount", "type=tmpfs,destination="+d+",tmpfs-mode=0700")
 	}
-	return append(args, imageTag, "sleep", "infinity")
+	return append(args, runtimeImage(), "sleep", "infinity")
 }
 
 // chownArgs は tmpfs（root 所有でマウントされる）を ccbox ユーザーに渡す。
@@ -151,7 +151,7 @@ func runSSHProxy(args []string) error {
 		return err
 	}
 	if !imageExists() {
-		return fmt.Errorf("%s イメージが見つかりません（Docker daemon が停止している可能性もあります）。docker info を確認し、必要なら ccbox build を実行してください", imageTag)
+		return fmt.Errorf("%s イメージが見つかりません（Docker daemon が停止している可能性もあります）。docker info を確認し、必要なら ccbox build を実行してください", runtimeImage())
 	}
 	ccboxHome, err := ensureCcboxHome()
 	if err != nil {

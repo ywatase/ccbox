@@ -277,6 +277,32 @@ func TestRunContainerRejectsColonInCcboxHome(t *testing.T) {
 	}
 }
 
+func TestRuntimeImage_default(t *testing.T) {
+	t.Setenv("CCBOX_IMAGE", "")
+	if got := runtimeImage(); got != imageTag {
+		t.Errorf("runtimeImage() = %q, want %q", got, imageTag)
+	}
+}
+
+func TestRuntimeImage_envOverride(t *testing.T) {
+	t.Setenv("CCBOX_IMAGE", "ccbox:myextra")
+	if got := runtimeImage(); got != "ccbox:myextra" {
+		t.Errorf("runtimeImage() = %q, want ccbox:myextra", got)
+	}
+}
+
+func TestBuildRunArgs_runtimeImageOverride(t *testing.T) {
+	// CCBOX_IMAGE で --tag ビルドしたイメージを実行できるようにする（レビュー指摘の P2）。
+	t.Setenv("CCBOX_IMAGE", "ccbox:myextra")
+	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true, nil)
+	if !slices.Contains(args, "ccbox:myextra") {
+		t.Errorf("buildRunArgs did not use CCBOX_IMAGE: %v", args)
+	}
+	if slices.Contains(args, imageTag) {
+		t.Errorf("buildRunArgs still contains default imageTag: %v", args)
+	}
+}
+
 func TestParseArgs_newSubcommands(t *testing.T) {
 	tests := []struct {
 		name string

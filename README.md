@@ -145,7 +145,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER ccbox
 ```
 
-複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。
+複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。実行時は `CCBOX_IMAGE` 環境変数でどのタグを使うか切り替える:
+
+```sh
+ccbox build --tag ccbox:myextra --extra ~/.ccbox/extra.myextra.Dockerfile
+CCBOX_IMAGE=ccbox:myextra ccbox        # 使い捨てで別イメージを実行
+CCBOX_IMAGE=ccbox:myextra ccbox ssh    # 常駐コンテナも同様に切替可能
+```
+
+`CCBOX_IMAGE` で指定したイメージが未ビルドの場合は自動ビルドせずエラー終了する（デフォルト `ccbox:latest` のみ自動ビルド対象）。
 
 ## マルチプロジェクトマウント（常駐コンテナのみ）
 
