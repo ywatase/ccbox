@@ -104,6 +104,8 @@ func TestIsDeniedUXPath(t *testing.T) {
 		{"~/.config/gh/hosts.yml", filepath.Join(home, ".config", "gh", "hosts.yml"), true},
 		{"~/.config/glab-cli/config.yml", filepath.Join(home, ".config", "glab-cli", "config.yml"), true},
 		{"~/.gitconfig", filepath.Join(home, ".gitconfig"), true},
+		{"~/.claude 配下", filepath.Join(home, ".claude", "session.json"), true},
+		{"~/.codex 配下", filepath.Join(home, ".codex", "config.toml"), true},
 		{"~/.tmux.conf は安全", filepath.Join(home, ".tmux.conf"), false},
 		{"~/dotfiles/tmux.conf は安全", filepath.Join(home, "dotfiles", "tmux.conf"), false},
 		{"~/.config は安全（.config/gh 以外）", filepath.Join(home, ".config"), false},

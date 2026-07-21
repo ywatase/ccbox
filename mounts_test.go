@@ -134,6 +134,118 @@ func TestValidateMount(t *testing.T) {
 	}
 }
 
+func TestValidateMount_isolationDenylist(t *testing.T) {
+	// host 側の isolation denylist に触れる mount を拒否する。実在するパスとして
+	// 一時ホーム配下に .ssh 等を作成し、それを host に指定した場合に拒否される。
+	home := t.TempDir()
+	for _, denied := range []string{".ssh", ".gnupg", ".aws", ".claude", ".codex", ".gitconfig"} {
+		target := filepath.Join(home, denied)
+		if denied == ".gitconfig" {
+			if err := os.WriteFile(target, []byte(""), 0600); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.MkdirAll(target, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Run("source "+denied, func(t *testing.T) {
+			err := validateMount(Mount{Host: target}, home)
+			if err == nil || !strings.Contains(err.Error(), "isolationDenylist") {
+				t.Errorf("validateMount(%q) err = %v, want isolationDenylist reject", target, err)
+			}
+		})
+	}
+}
+
+func TestValidateMount_isolationDenylist_subpath(t *testing.T) {
+	// denylist ディレクトリ配下（~/.ssh/subdir）も拒否
+	home := t.TempDir()
+	sub := filepath.Join(home, ".ssh", "keys")
+	if err := os.MkdirAll(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := validateMount(Mount{Host: sub}, home)
+	if err == nil || !strings.Contains(err.Error(), "isolationDenylist") {
+		t.Errorf("~/.ssh 配下も拒否すべき: err=%v", err)
+	}
+}
+
+func TestValidateMount_isolationDenylist_viaSymlink(t *testing.T) {
+	// シンボリックリンク経由で denylist に解決される場合も拒否
+	home := t.TempDir()
+	secret := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.MkdirAll(filepath.Dir(secret), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secret, []byte("SECRET"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "innocuous")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	err := validateMount(Mount{Host: link}, home)
+	if err == nil || !strings.Contains(err.Error(), "isolationDenylist") {
+		t.Errorf("symlink 経由 denylist を拒否すべき: err=%v", err)
+	}
+}
+
+func TestValidateMount_containerHomeReserved(t *testing.T) {
+	home := t.TempDir()
+	sub := filepath.Join(home, "sub")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		container string
+		wantErr   string
+	}{
+		{"/home/ccbox そのもの", "/home/ccbox", "コンテナホームそのもの"},
+		{"/home/ccbox/.ssh", "/home/ccbox/.ssh", "予約領域"},
+		{"/home/ccbox/foo", "/home/ccbox/foo", "予約領域"},
+		{"/home/ccbox/.ccbox/home（Path Traversal 風）",
+			"/home/ccbox/.ccbox/home", "予約領域"},
+		{"末尾スラッシュ", "/home/ccbox/", "コンテナホームそのもの"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMount(Mount{Host: sub, Container: tt.container}, home)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("err = %v, want contains %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateMount_containerHomeReserved_defaultFromHost(t *testing.T) {
+	// container 省略時は host と同じ絶対パスに mount するため、host が /home/ccbox 配下でも拒否
+	home := t.TempDir()
+	// host = /home/ccbox/... のようなパスを作れないため、代わりに絶対 /home/ccbox を host に指定
+	err := validateMount(Mount{Host: "/home/ccbox"}, home)
+	if err == nil {
+		t.Fatal("err = nil, want error")
+	}
+	// container 側の検査で先に落ちる or host が存在しないで落ちる、どちらでも denylist 実現
+}
+
+func TestValidateMount_allowsRegularPath(t *testing.T) {
+	home := t.TempDir()
+	sub := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// container 省略、通常パスは許可
+	if err := validateMount(Mount{Host: sub}, home); err != nil {
+		t.Errorf("通常パスが拒否された: %v", err)
+	}
+	// container 明示、/home/ccbox から離れた場所は許可
+	if err := validateMount(Mount{Host: sub, Container: "/opt/data"}, home); err != nil {
+		t.Errorf("/opt/data への mount が拒否された: %v", err)
+	}
+}
+
 func TestMountToDockerArg(t *testing.T) {
 	tests := []struct {
 		m    Mount

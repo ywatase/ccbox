@@ -11,16 +11,21 @@ import (
 // ホーム相対パス。将来 ~/.ccbox/config.yaml でユーザーが追加できるようにする（Phase 2 で対応）。
 var uxWhitelistDefault = []string{".tmux.conf"}
 
-// uxDenylist は絶対に bind mount させない秘密漏洩リスクのあるパス。
+// isolationDenylist はコンテナへの露出を許さないホスト側パス（ホーム相対）。
+// UX bind mount と projects.yaml マウントの両方で source の denylist として使う。
 // EvalSymlinks で解決した実パスに対して判定するため、シンボリックリンクによる回避を防ぐ。
-// ホーム相対パス、ディレクトリはその配下も含めて禁止する。
-var uxDenylist = []string{
+// ディレクトリはその配下（サブディレクトリ・ファイル）も含めて禁止する。
+// .claude / .codex は ~/.ccbox/home 側で永続化されるため、ホスト側の同名を
+// コンテナに公開すると隔離が破壊される。
+var isolationDenylist = []string{
 	".ssh",
 	".gnupg",
 	".aws",
 	".config/gh",
 	".config/glab-cli",
 	".gitconfig",
+	".claude",
+	".codex",
 }
 
 // uxBindMountArgs は UX 設定のホワイトリスト bind mount を docker run 引数列で返す。
@@ -67,7 +72,7 @@ func isDeniedUXPath(resolvedPath, home string) bool {
 	if r, err := filepath.EvalSymlinks(home); err == nil {
 		realHome = r
 	}
-	for _, denied := range uxDenylist {
+	for _, denied := range isolationDenylist {
 		for _, base := range dedupSlice(home, realHome) {
 			deniedAbs := filepath.Clean(filepath.Join(base, denied))
 			if cleanResolved == deniedAbs {

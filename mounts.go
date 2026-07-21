@@ -95,8 +95,14 @@ func (c *MountsConfig) remove(host string) bool {
 	return true
 }
 
+// containerHome はコンテナ側のホームディレクトリ。ここへの上書き mount は
+// ccbox の隔離設計を破壊するため、projects.yaml から指定できない。
+const containerHome = "/home/ccbox"
+
 // validateMount は 1 エントリを検査する。使い捨て実行と同じ安全チェックを各エントリに適用。
-// projects.yaml 経由でも認証情報の露出を許さないため、ホームディレクトリやその祖先は拒否。
+// projects.yaml 経由でも認証情報の露出を許さないため、ホームディレクトリやその祖先・
+// isolationDenylist 相当のホスト側パスへの mount を拒否する。container 側も /home/ccbox
+// 完全一致およびその配下（~/.ccbox/home のマウントを上書きする形）を拒否する。
 func validateMount(m Mount, home string) error {
 	if m.Host == "" {
 		return errors.New("host は必須です")
@@ -114,6 +120,14 @@ func validateMount(m Mount, home string) error {
 		if strings.Contains(m.Container, ":") {
 			return fmt.Errorf("container に ':' が含まれるため docker の -v 構文で安全にマウントできません: %s", m.Container)
 		}
+		if err := validateContainerPath(m.Container); err != nil {
+			return err
+		}
+	} else {
+		// container 省略時は host と同じ絶対パスに mount するため、その値でも判定
+		if err := validateContainerPath(m.Host); err != nil {
+			return err
+		}
 	}
 	if _, err := os.Stat(m.Host); err != nil {
 		return fmt.Errorf("host パスが存在しないかアクセスできません: %s: %w", m.Host, err)
@@ -128,6 +142,24 @@ func validateMount(m Mount, home string) error {
 	}
 	if isUnsafeMountDir(mountHost, mountHome) {
 		return fmt.Errorf("host %s はホームディレクトリ全体を露出させるため許可されません", m.Host)
+	}
+	if isDeniedUXPath(mountHost, mountHome) {
+		return fmt.Errorf("host %s は認証情報を含む隔離対象のため mount できません（isolationDenylist）", m.Host)
+	}
+	return nil
+}
+
+// validateContainerPath は container 側のマウント先が予約領域（コンテナホーム）に
+// 触れていないかを判定する。/home/ccbox 完全一致・その配下は認証情報の永続化領域
+// （~/.ccbox/home の上書き）となるため拒否する。
+func validateContainerPath(p string) error {
+	clean := filepath.Clean(p)
+	if clean == containerHome {
+		return fmt.Errorf("container %s はコンテナホームそのものへの上書きになるため許可されません", p)
+	}
+	rel, err := filepath.Rel(containerHome, clean)
+	if err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+		return fmt.Errorf("container %s は /home/ccbox 配下の予約領域のため mount できません", p)
 	}
 	return nil
 }
