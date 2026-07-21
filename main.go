@@ -27,6 +27,7 @@ type dispatchResult struct {
 	forceClaude bool     // -- による強制 claude 渡し
 	extraPath   string   // build/update の --extra <path>（空=自動探索）
 	tag         string   // build/update の --tag <name>（空=imageTag デフォルト）
+	parseErr    error    // フラグ解析エラー。非 nil のとき main は usage 付きで exit 1
 }
 
 // parseArgs はサブコマンド判定を行う。
@@ -67,26 +68,31 @@ func parseArgs(args []string) dispatchResult {
 }
 
 // parseBuildFlags は build/update サブコマンドのフラグ（--extra <path>, --tag <name>）を解析する。
-// 不明フラグや値欠落は "help" にフォールバックせず、error 相当として build/update をそのまま返す
-// （実行時に buildImage 側でパスの存在確認等が走る）。
+// 不明フラグ・値欠落は parseErr を保持して返す。呼び出し側は parseErr を確認し、
+// 非 nil ならビルドを開始せず usage 付きで終了する。--extra を無視して黙って
+// 自動探索に落とすと、ユーザーの意図に反して ~/.ccbox/extra.Dockerfile が
+// 巻き込まれるため、値欠落は明示エラーにする。
 func parseBuildFlags(sub string, args []string) dispatchResult {
 	r := dispatchResult{subcommand: sub}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--extra":
 			if i+1 >= len(args) {
-				// 値が無い場合は help にフォールバックせず、そのまま返す（呼び出し側で扱う想定）
-				r.extraPath = ""
+				r.parseErr = fmt.Errorf("--extra には値（extra.Dockerfile のパス）が必要です")
 				return r
 			}
 			r.extraPath = args[i+1]
 			i++
 		case "--tag":
 			if i+1 >= len(args) {
+				r.parseErr = fmt.Errorf("--tag には値（イメージタグ名）が必要です")
 				return r
 			}
 			r.tag = args[i+1]
 			i++
+		default:
+			r.parseErr = fmt.Errorf("不明なフラグ: %s", args[i])
+			return r
 		}
 	}
 	return r
@@ -94,6 +100,11 @@ func parseBuildFlags(sub string, args []string) dispatchResult {
 
 func main() {
 	r := parseArgs(os.Args[1:])
+	if r.parseErr != nil {
+		fmt.Fprintln(os.Stderr, "エラー:", r.parseErr)
+		fmt.Fprintln(os.Stderr, "使い方: ccbox", r.subcommand, "[--extra <path>] [--tag <name>]")
+		os.Exit(2)
+	}
 	switch r.subcommand {
 	case "build":
 		runWithDockerCheck(false, func() error { return buildImage(false, r.extraPath, r.tag) })

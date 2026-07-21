@@ -24,8 +24,6 @@ func TestParseBuildFlags_extraAndTag(t *testing.T) {
 			"build", "/e", "t"},
 		{"順序反転", []string{"--tag", "t", "--extra", "/e"},
 			"update", "/e", "t"},
-		{"未知フラグは無視", []string{"--unknown", "x", "--extra", "/e"},
-			"build", "/e", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -33,11 +31,42 @@ func TestParseBuildFlags_extraAndTag(t *testing.T) {
 			if got.subcommand != tt.sub {
 				t.Errorf("subcommand = %q, want %q", got.subcommand, tt.sub)
 			}
+			if got.parseErr != nil {
+				t.Errorf("parseErr = %v, want nil", got.parseErr)
+			}
 			if got.extraPath != tt.wantExtraPath {
 				t.Errorf("extraPath = %q, want %q", got.extraPath, tt.wantExtraPath)
 			}
 			if got.tag != tt.wantTag {
 				t.Errorf("tag = %q, want %q", got.tag, tt.wantTag)
+			}
+		})
+	}
+}
+
+func TestParseBuildFlags_rejectsInvalid(t *testing.T) {
+	// --extra / --tag の値欠落、未知フラグは parseErr で拒否する。
+	// --extra を黙って自動探索にフォールバックすると、意図せず ~/.ccbox/extra.Dockerfile が
+	// 使われるため（レビュー指摘）、明示エラーで exit 2 させる。
+	tests := []struct {
+		name        string
+		args        []string
+		wantErrPart string
+	}{
+		{"--extra 値なし（末尾）", []string{"--extra"}, "--extra"},
+		{"--tag 値なし（末尾）", []string{"--tag"}, "--tag"},
+		{"未知フラグ", []string{"--foo", "bar"}, "不明なフラグ"},
+		{"未知フラグ（他フラグとの混在）",
+			[]string{"--extra", "/e", "--unknown"}, "不明なフラグ"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseBuildFlags("build", tt.args)
+			if got.parseErr == nil {
+				t.Fatalf("parseErr = nil, want non-nil")
+			}
+			if !strings.Contains(got.parseErr.Error(), tt.wantErrPart) {
+				t.Errorf("parseErr = %v, want contains %q", got.parseErr, tt.wantErrPart)
 			}
 		})
 	}
