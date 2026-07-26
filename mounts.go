@@ -146,6 +146,12 @@ func validateMount(m Mount, home string) error {
 	if isDeniedUXPath(mountHost, mountHome) {
 		return fmt.Errorf("host %s は認証情報を含む隔離対象のため mount できません（isolationDenylist）", m.Host)
 	}
+	// denylist 項目そのものだけでなく、その項目を配下に含む祖先ディレクトリ（例: ~/.config）
+	// もディレクトリ mount で公開してしまうため拒否する。denylist 自身の判定（isDeniedUXPath）
+	// と補完し合う。
+	if isolationDenylistCoveredBy(mountHost, mountHome) {
+		return fmt.Errorf("host %s は配下に認証情報を含む隔離対象（isolationDenylist）を持つため mount できません", m.Host)
+	}
 	return nil
 }
 

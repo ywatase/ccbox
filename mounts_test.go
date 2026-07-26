@@ -191,6 +191,83 @@ func TestValidateMount_isolationDenylist_viaSymlink(t *testing.T) {
 	}
 }
 
+func TestValidateMount_ancestorContainingDenylist(t *testing.T) {
+	// source を denylist の項目そのものではなく、その項目を配下に含む祖先ディレクトリに
+	// 指定した場合も拒否する（~/.config → 配下に .config/gh がある）。
+	home := t.TempDir()
+	// .config/gh を作成 → .config 全体を mount すると gh も露出する
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateMount(Mount{Host: filepath.Join(home, ".config")}, home)
+	if err == nil {
+		t.Fatal("~/.config の mount が許可された（.config/gh を配下に含むので拒否すべき）")
+	}
+	if !strings.Contains(err.Error(), "配下に") {
+		t.Errorf("エラー文言に「配下に」が含まれない: %v", err)
+	}
+}
+
+func TestValidateMount_ancestorContainingDenylist_viaSymlink(t *testing.T) {
+	// シンボリックリンク経由で祖先を指した場合も拒否する。
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// ~/link → ~/.config （innocent 名で denylist 祖先を指す）
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(filepath.Join(home, ".config"), link); err != nil {
+		t.Fatal(err)
+	}
+	err := validateMount(Mount{Host: link}, home)
+	if err == nil {
+		t.Fatal("symlink 経由の祖先 mount が許可された")
+	}
+	if !strings.Contains(err.Error(), "配下に") {
+		t.Errorf("エラー文言に「配下に」が含まれない: %v", err)
+	}
+}
+
+func TestValidateMount_ancestorNotContainingDenylist_allowed(t *testing.T) {
+	// 名前が denylist の祖先っぽくても、実際に denylist 項目を配下に持たなければ許可。
+	home := t.TempDir()
+	// .config/nvim だけ作る（.config/gh は作らない）
+	sub := filepath.Join(home, ".config", "nvim")
+	if err := os.MkdirAll(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// ~/.config/nvim を mount → denylist を配下に含まない → 許可
+	if err := validateMount(Mount{Host: sub}, home); err != nil {
+		t.Errorf("denylist を含まない ~/.config/nvim が拒否された: %v", err)
+	}
+}
+
+func TestIsolationDenylistCoveredBy(t *testing.T) {
+	// 単体判定のテスト。EvalSymlinks 前提だが t.TempDir 直下で構築するので symlink 経由は別テスト。
+	tests := []struct {
+		name string
+		host string // home からの相対
+		want bool
+	}{
+		{".config は gh を含むので拒否", ".config", true},
+		{".config/nvim は含まないので許可", ".config/nvim", false},
+		{"workspace は無関係なので許可", "workspace", false},
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isolationDenylistCoveredBy(filepath.Join(home, tt.host), home)
+			if got != tt.want {
+				t.Errorf("isolationDenylistCoveredBy(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateMount_containerHomeReserved(t *testing.T) {
 	home := t.TempDir()
 	sub := filepath.Join(home, "sub")
