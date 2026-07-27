@@ -2,8 +2,10 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -22,6 +24,39 @@ func runtimeImage() string {
 		return env
 	}
 	return imageTag
+}
+
+// imageTagAllowed は docker のイメージタグ・レジストリパスとして許容する文字集合。
+// ssh_config の ProxyCommand へ埋め込む前に validate することで、$ ` " \ 等の
+// シェル特殊文字によるインジェクションを防ぐ。docker の legal tag よりも保守的
+// （: / . _ - は許可、# @ + 等は不許可）。
+var imageTagAllowed = regexp.MustCompile(`^[A-Za-z0-9._:/-]+$`)
+
+// validateImageTag は CCBOX_IMAGE / --image 引数として渡されたタグ文字列が
+// 安全に扱えるかを検査する。ProxyCommand への埋め込み・docker CLI への引き渡し前に呼ぶ。
+func validateImageTag(tag string) error {
+	if tag == "" {
+		return errors.New("イメージタグが空です")
+	}
+	if !imageTagAllowed.MatchString(tag) {
+		return fmt.Errorf("イメージタグに使えない文字が含まれています: %q（許容: %s）", tag, imageTagAllowed.String())
+	}
+	return nil
+}
+
+// checkEnvImageTag は CCBOX_IMAGE を main の入口で検査する。
+// 値は docker CLI や ssh_config の ProxyCommand に流れるため、何かに渡す前・
+// エラーメッセージに載せる前に弾く。後段（イメージ不在エラー等）で弾くと、
+// 不正なタグ文字列がコピペ可能なコマンド例として出力されてしまう。
+func checkEnvImageTag() error {
+	env := os.Getenv("CCBOX_IMAGE")
+	if env == "" {
+		return nil
+	}
+	if err := validateImageTag(env); err != nil {
+		return fmt.Errorf("CCBOX_IMAGE: %w", err)
+	}
+	return nil
 }
 
 //go:embed Dockerfile
@@ -117,6 +152,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "使い方: ccbox", r.subcommand, "[--extra <path>] [--tag <name>]")
 		os.Exit(2)
 	}
+	if err := checkEnvImageTag(); err != nil {
+		fmt.Fprintln(os.Stderr, "エラー:", err)
+		os.Exit(2)
+	}
 	switch r.subcommand {
 	case "build":
 		runWithDockerCheck(false, func() error { return buildImage(false, r.extraPath, r.tag) })
@@ -167,9 +206,11 @@ func runWithDockerCheck(autoBuild bool, fn func() error) {
 		ri := runtimeImage()
 		if ri != imageTag {
 			// CCBOX_IMAGE で指定されたカスタムイメージは自動ビルドできない。
-			// build のデフォルトタグ (ccbox:latest) と一致しないため、明示的にビルドを促す。
-			fmt.Fprintf(os.Stderr, "エラー: イメージ %s が見つかりません。\n", ri)
-			fmt.Fprintf(os.Stderr, "ccbox build --tag %s [--extra <path>] で作成してください。\n", ri)
+			// build のデフォルトタグと一致しないため、明示的にビルドを促す。
+			// %q で引用するのは、タグ文字列をそのまま出すとコピペ時にシェルへ
+			// 解釈される形になるため（入口の validateImageTag と二重で防ぐ）。
+			fmt.Fprintf(os.Stderr, "エラー: イメージ %q が見つかりません。\n", ri)
+			fmt.Fprintf(os.Stderr, "ccbox build --tag %q [--extra <path>] で作成してください。\n", ri)
 			os.Exit(1)
 		}
 		fmt.Fprintln(os.Stderr, "ccbox:latest イメージが見つかりません。自動ビルドを開始します...")
@@ -211,6 +252,11 @@ func printHelp() {
   ~/.ccbox/home  →  コンテナの /home/ccbox（セッション・認証情報の永続化）
   <カレントディレクトリ>  →  コンテナ内の同一絶対パス（作業ディレクトリ）
   ~/.tmux.conf   →  /home/ccbox/.tmux.conf（read-only、存在時のみ）
+
+環境変数:
+  CCBOX_IMAGE            実行に使うイメージを切り替える（未ビルドなら自動ビルドせずエラー）
+                         ccbox ssh 実行時の値は ssh_config の ProxyCommand に永続化される
+  CCBOX_ALLOW_UNSAFE_DIR ホーム露出ガードを無効化する（=1、非推奨）
 
 初回認証:
   claude: ccbox shell で bash を起動後、claude コマンドで OAuth ログイン

@@ -88,18 +88,35 @@ func findDocker() (string, error) {
 // extraMounts は projects.yaml 追加マウント引数列。
 // 既に実行中/停止中のコンテナは再作成せずそのまま使うため、projects.yaml を変更した
 // 場合は `ccbox down && ccbox ssh` で作り直す必要がある（README に明記）。
+// 既存コンテナのイメージが runtimeImage() と一致しない場合は明示的にエラーを返す。
+// silent recreate は stdout が SSH トランスポートである本経路では危険で、コンテナ内の
+// in-container state を壊すリスクがあるため。
 func ensureProjectContainer(dockerPath, projectPath, ccboxHome string, uxBinds, extraMounts []string) (string, error) {
 	name := containerName(projectPath)
 	for attempt := 0; ; attempt++ {
-		out, err := exec.Command(dockerPath, "inspect", "-f", "{{.State.Running}}", name).Output()
+		// .State.Running と .Config.Image を 1 回の inspect でまとめて取得する。
+		// タブ区切りは docker のタグ書式（[a-zA-Z0-9._:/-]）と衝突しないため安全。
+		out, err := exec.Command(dockerPath, "inspect", "-f", "{{.State.Running}}\t{{.Config.Image}}", name).Output()
 		switch {
-		case err == nil && strings.TrimSpace(string(out)) == "true":
-			// 実行中でも chown は毎回行う。ユーザーの docker restart で tmpfs が
-			// root 所有に初期化されている可能性があり、chown は冪等で安価なため。
 		case err == nil:
-			// 存在するが停止中 → 再開。tmpfs は初期化されるので chown もやり直す
-			if err := runQuiet(dockerPath, "start", name); err != nil {
-				return "", fmt.Errorf("コンテナ %s を再開できません: %w", name, err)
+			parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+			running := parts[0] == "true"
+			existingImage := ""
+			if len(parts) == 2 {
+				existingImage = parts[1]
+			}
+			wanted := runtimeImage()
+			if existingImage != wanted {
+				return "", fmt.Errorf("既存コンテナ %s のイメージ %q が要求 %q と一致しません。`ccbox down && ccbox ssh` で作り直してください", name, existingImage, wanted)
+			}
+			if running {
+				// 実行中でも chown は毎回行う。ユーザーの docker restart で tmpfs が
+				// root 所有に初期化されている可能性があり、chown は冪等で安価なため。
+			} else {
+				// 存在するが停止中 → 再開。tmpfs は初期化されるので chown もやり直す
+				if err := runQuiet(dockerPath, "start", name); err != nil {
+					return "", fmt.Errorf("コンテナ %s を再開できません: %w", name, err)
+				}
 			}
 		default:
 			if err := runQuiet(dockerPath, buildPersistentRunArgs(name, ccboxHome, projectPath, uxBinds, extraMounts)...); err != nil {
@@ -126,13 +143,29 @@ func runQuiet(dockerPath string, args ...string) error {
 
 // runSSHProxy は ProxyCommand 本体。常駐コンテナを保証してから自プロセスを
 // docker exec sshd -i に置き換える（exec なので SSH のシグナル・EOF 伝搬が素直になる）。
+// 引数は `<projectPath>` または `<projectPath> --image <tag>` の 2 形式。
+// --image は ccbox ssh 登録時に CCBOX_IMAGE の値を永続化するために ProxyCommand に
+// 埋め込まれる。ssh 起動時には環境変数が引き継がれないため。
 func runSSHProxy(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("使い方: ccbox ssh-proxy <プロジェクトの絶対パス>")
+	if len(args) != 1 && len(args) != 3 {
+		return fmt.Errorf("使い方: ccbox ssh-proxy <プロジェクトの絶対パス> [--image <tag>]")
 	}
 	projectPath := args[0]
 	if !filepath.IsAbs(projectPath) {
 		return fmt.Errorf("プロジェクトパスは絶対パスで指定してください: %s", projectPath)
+	}
+	if len(args) == 3 {
+		if args[1] != "--image" {
+			return fmt.Errorf("使い方: ccbox ssh-proxy <プロジェクトの絶対パス> [--image <tag>]")
+		}
+		if err := validateImageTag(args[2]); err != nil {
+			return err
+		}
+		// runtimeImage() は CCBOX_IMAGE を読むため、ここで env を設定するのが最短経路。
+		// 呼び出し元 (App/ssh) の env は影響を受けない（子プロセスの env のみ変更）。
+		if err := os.Setenv("CCBOX_IMAGE", args[2]); err != nil {
+			return fmt.Errorf("CCBOX_IMAGE を設定できません: %w", err)
+		}
 	}
 
 	home, err := os.UserHomeDir()

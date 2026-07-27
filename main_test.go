@@ -291,6 +291,36 @@ func TestRuntimeImage_envOverride(t *testing.T) {
 	}
 }
 
+func TestCheckEnvImageTag(t *testing.T) {
+	// 入口で弾かないと、不正なタグが「ccbox build --tag <値>」のコピペ可能な
+	// コマンド例としてエラー出力に載り、コピペでシェル実行されてしまう。
+	tests := []struct {
+		name    string
+		env     string
+		wantErr bool
+	}{
+		{"未設定", "", false},
+		{"正常なタグ", "ccbox:myextra", false},
+		{"レジストリ付き", "registry.example.com/ns/img:v1", false},
+		{"コマンド置換", "ccbox:x$(touch /tmp/PWNED)", true},
+		{"バッククォート", "img`id`", true},
+		{"引用符ブレイク", `img" ; touch /tmp/PWNED ; echo "`, true},
+		{"改行", "img\nHost evil", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CCBOX_IMAGE", tt.env)
+			err := checkEnvImageTag()
+			if tt.wantErr && err == nil {
+				t.Errorf("checkEnvImageTag() = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("checkEnvImageTag() = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestBuildRunArgs_runtimeImageOverride(t *testing.T) {
 	// CCBOX_IMAGE で --tag ビルドしたイメージを実行できるようにする（レビュー指摘の P2）。
 	t.Setenv("CCBOX_IMAGE", "ccbox:myextra")
@@ -317,6 +347,10 @@ func TestParseArgs_newSubcommands(t *testing.T) {
 			dispatchResult{subcommand: "ssh"}},
 		{"ssh-proxy パス付き", []string{"ssh-proxy", "/path/to/proj"},
 			dispatchResult{subcommand: "ssh-proxy", claudeArgs: []string{"/path/to/proj"}}},
+		{"ssh-proxy --image 付き",
+			[]string{"ssh-proxy", "/path/to/proj", "--image", "ccbox:myextra"},
+			dispatchResult{subcommand: "ssh-proxy",
+				claudeArgs: []string{"/path/to/proj", "--image", "ccbox:myextra"}}},
 		{"ps", []string{"ps"},
 			dispatchResult{subcommand: "ps"}},
 		{"down パスなし", []string{"down"},

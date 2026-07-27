@@ -145,15 +145,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER ccbox
 ```
 
-複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドは `ccbox:latest` のまま）。実行時は `CCBOX_IMAGE` 環境変数でどのタグを使うか切り替える:
+複数の拡張を使い分けたい場合は `ccbox build --tag ccbox:myextra` のようにタグを分ける（本体ビルドはデフォルトタグのまま）。実行時は `CCBOX_IMAGE` 環境変数でどのタグを使うか切り替える:
 
 ```sh
 ccbox build --tag ccbox:myextra --extra ~/.ccbox/extra.myextra.Dockerfile
-CCBOX_IMAGE=ccbox:myextra ccbox        # 使い捨てで別イメージを実行
-CCBOX_IMAGE=ccbox:myextra ccbox ssh    # 常駐コンテナも同様に切替可能
+
+# 使い捨て実行: 環境変数がそのプロセスに効く
+CCBOX_IMAGE=ccbox:myextra ccbox
+CCBOX_IMAGE=ccbox:myextra ccbox shell
+
+# SSH 登録: 登録時のイメージ指定が ssh_config に永続化される
+CCBOX_IMAGE=ccbox:myextra ccbox ssh
 ```
 
-`CCBOX_IMAGE` で指定したイメージが未ビルドの場合は自動ビルドせずエラー終了する（デフォルト `ccbox:latest` のみ自動ビルド対象）。
+**SSH 経路でのイメージ指定は登録時に固定される。** Mac App や `ssh` コマンドが `ProxyCommand` を起動する時点ではシェルの環境変数が引き継がれないため、`ccbox ssh` 実行時の `CCBOX_IMAGE` を `~/.ccbox/ssh/config` の `ProxyCommand ... --image <tag>` として書き込む。
+
+```sshconfig
+Host ccbox-myapp
+  ...
+  ProxyCommand "/usr/local/bin/ccbox" ssh-proxy "/Users/x/myapp" --image "ccbox:myextra"
+```
+
+イメージを変えたいときは `CCBOX_IMAGE` を変えて `ccbox ssh` を再実行して登録を上書きする。既存の常駐コンテナが別イメージで動いている場合は、それを検出して次のエラーで中止する（コンテナ内の状態を壊さないよう自動再作成はしない）:
+
+```
+既存コンテナ ccbox-myapp-xxxxxxxx のイメージ "ccbox:latest" が要求 "ccbox:myextra" と一致しません。
+`ccbox down && ccbox ssh` で作り直してください
+```
+
+**その他の制約:**
+- `CCBOX_IMAGE` で指定したイメージが未ビルドの場合は自動ビルドせずエラー終了する（デフォルトタグのみ自動ビルド対象）
+- タグ名は `[A-Za-z0-9._:/-]` のみ許可。`ProxyCommand` はシェル経由で実行されるため、シェル特殊文字を含むタグは登録時に拒否する
 
 ## マルチプロジェクトマウント（常駐コンテナのみ）
 
