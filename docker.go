@@ -214,14 +214,7 @@ func runContainer(entryCmd string, extraArgs []string) error {
 func isUnsafeMountDir(pwd, home string) bool {
 	cleanPwd := filepath.Clean(pwd)
 	cleanHome := filepath.Clean(home)
-	if cleanPwd == cleanHome {
-		return true
-	}
-	rel, err := filepath.Rel(cleanPwd, cleanHome)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	return cleanPwd == cleanHome || isWithin(cleanPwd, cleanHome)
 }
 
 // buildRunArgs は docker run の引数列を構築する。

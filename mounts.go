@@ -163,9 +163,8 @@ func validateContainerPath(p string) error {
 	if clean == containerHome {
 		return fmt.Errorf("container %s はコンテナホームそのものへの上書きになるため許可されません", p)
 	}
-	rel, err := filepath.Rel(containerHome, clean)
-	if err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
-		return fmt.Errorf("container %s は /home/ccbox 配下の予約領域のため mount できません", p)
+	if isWithin(containerHome, clean) {
+		return fmt.Errorf("container %s は %s 配下の予約領域のため mount できません", p, containerHome)
 	}
 	return nil
 }

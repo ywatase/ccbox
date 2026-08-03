@@ -63,31 +63,35 @@ func uxBindMountArgs(home string, whitelist []string) []string {
 	return args
 }
 
+// isWithin は target が base の真の配下（base 自身は含まない）かを判定する。
+// パス封じ込め判定はこの 1 箇所に集約する。素朴な strings.HasPrefix(rel, "..") は
+// ".." で始まる正規のディレクトリ名（例: base/..secret）を「base の外」と誤判定して
+// 封じ込めを破るため、".." 完全一致と ".." + セパレータのみを外側として扱う。
+// base / target は絶対パスかつ EvalSymlinks 済みであることを前提とする。
+func isWithin(base, target string) bool {
+	rel, err := filepath.Rel(filepath.Clean(base), filepath.Clean(target))
+	if err != nil {
+		return false
+	}
+	if rel == "." || rel == ".." || filepath.IsAbs(rel) {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // isolationDenylistCoveredBy は mountHost が isolationDenylist の何れかの項目を
 // 配下に含む祖先ディレクトリなら true を返す。UX bind は単一ファイル限定なので
 // この判定は mount source（ディレクトリ許容）にのみ意味を持つ。
 // mountHost / mountHome は EvalSymlinks 済みであることを前提とする。
-// 例: mountHost=~/.config は .config/gh を配下に持つので true（拒否）
+// denylist 項目の実在は問わないパス形状の判定である（~/.config は .config/gh が
+// 無くても拒否する）。将来 denylist 項目が作られた時点で露出しないよう保守的に倒す。
+// 例: mountHost=~/.config は .config/gh を配下に持つ形なので true（拒否）
 //
-//	mountHost=~/.config/nvim は denied を含まないので false（許可）
+//	mountHost=~/.config/nvim は denied を配下に含まないので false（許可）
 func isolationDenylistCoveredBy(mountHost, mountHome string) bool {
-	cleanHost := filepath.Clean(mountHost)
-	realHome := mountHome
-	if r, err := filepath.EvalSymlinks(mountHome); err == nil {
-		realHome = r
-	}
-	for _, denied := range isolationDenylist {
-		for _, base := range dedupSlice(mountHome, realHome) {
-			deniedAbs := filepath.Clean(filepath.Join(base, denied))
-			rel, err := filepath.Rel(cleanHost, deniedAbs)
-			if err != nil {
-				continue
-			}
-			// rel が "." は host == denied（isDeniedUXPath 側で扱う）、
-			// ".." で始まる or 絶対パスは host の外。それ以外は host 配下。
-			if rel != "." && rel != ".." &&
-				!strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
-				!filepath.IsAbs(rel) {
+	for _, base := range denylistBases(mountHome) {
+		for _, denied := range isolationDenylist {
+			if isWithin(mountHost, filepath.Join(base, denied)) {
 				return true
 			}
 		}
@@ -96,27 +100,29 @@ func isolationDenylistCoveredBy(mountHost, mountHome string) bool {
 }
 
 // isDeniedUXPath は resolvedPath（EvalSymlinks 済み絶対パス）が禁止リストに触れるかを判定する。
-// home 側も EvalSymlinks で解決してから比較する。macOS では /var/folders/... → /private/var/folders/...
-// のようにシステム側のパス正規化が入り、単純な文字列比較では bypass 可能になるため。
 func isDeniedUXPath(resolvedPath, home string) bool {
-	cleanResolved := filepath.Clean(resolvedPath)
-	realHome := home
-	if r, err := filepath.EvalSymlinks(home); err == nil {
-		realHome = r
-	}
-	for _, denied := range isolationDenylist {
-		for _, base := range dedupSlice(home, realHome) {
+	clean := filepath.Clean(resolvedPath)
+	for _, base := range denylistBases(home) {
+		for _, denied := range isolationDenylist {
 			deniedAbs := filepath.Clean(filepath.Join(base, denied))
-			if cleanResolved == deniedAbs {
-				return true
-			}
-			rel, err := filepath.Rel(deniedAbs, cleanResolved)
-			if err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			if clean == deniedAbs || isWithin(deniedAbs, clean) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// denylistBases は denylist を展開する基点となるホームディレクトリ候補を返す。
+// home 側も EvalSymlinks で解決した値を併せて返すのは、macOS では
+// /var/folders/... → /private/var/folders/... のようにシステム側のパス正規化が入り、
+// 解決済み実パスと未解決 home の単純比較では bypass 可能になるため。
+func denylistBases(home string) []string {
+	realHome := home
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		realHome = r
+	}
+	return dedupSlice(home, realHome)
 }
 
 func dedupSlice(a, b string) []string {

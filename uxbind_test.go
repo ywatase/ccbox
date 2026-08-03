@@ -88,6 +88,72 @@ func TestUXBindMountArgs_symlinkToSafePathAllowed(t *testing.T) {
 	}
 }
 
+func TestIsWithin(t *testing.T) {
+	// 素朴な strings.HasPrefix(rel, "..") だと base/..name を「外」と誤判定して
+	// 封じ込めが破れる。".." 完全一致と ".." + セパレータのみを外側として扱う。
+	tests := []struct {
+		name   string
+		base   string
+		target string
+		want   bool
+	}{
+		{"直下のファイル", "/a/b", "/a/b/c", true},
+		{"深い階層", "/a/b", "/a/b/c/d/e", true},
+		{"'..' で始まる名前も配下", "/a/b", "/a/b/..secret", true},
+		{"'..' で始まる名前の深い階層", "/a/b", "/a/b/..d/e", true},
+		{"'...' で始まる名前も配下", "/a/b", "/a/b/...x", true},
+		{"base 自身は配下でない", "/a/b", "/a/b", false},
+		{"親は配下でない", "/a/b", "/a", false},
+		{"祖先は配下でない", "/a/b/c", "/a", false},
+		{"兄弟は配下でない", "/a/b", "/a/c", false},
+		{"名前が前方一致する兄弟は配下でない", "/a/b", "/a/bc", false},
+		{"無関係", "/a/b", "/x/y", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isWithin(tt.base, tt.target); got != tt.want {
+				t.Errorf("isWithin(%q, %q) = %v, want %v", tt.base, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsDeniedUXPath_dotdotPrefixedNameInsideDenylist(t *testing.T) {
+	// denylist ディレクトリ配下で名前が ".." で始まるものも封じ込める。
+	// 旧実装は filepath.Rel の結果 "..secret" を HasPrefix(rel, "..") で
+	// 「~/.ssh の外」と誤判定し、bind mount を通してしまっていた。
+	home := "/Users/x"
+	for _, p := range []string{
+		filepath.Join(home, ".ssh", "..secret"),
+		filepath.Join(home, ".ssh", "..d", "key"),
+		filepath.Join(home, ".gnupg", "..x"),
+		filepath.Join(home, ".config", "gh", "..y"),
+	} {
+		if !isDeniedUXPath(p, home) {
+			t.Errorf("isDeniedUXPath(%q) = false, want true（denylist 配下）", p)
+		}
+	}
+}
+
+func TestUXBindMountArgs_symlinkToDotdotNameInDenylistRejected(t *testing.T) {
+	// end-to-end: ~/.tmux.conf → ~/.ssh/..secret が bind mount されないこと。
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(sshDir, "..secret")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(home, ".tmux.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if got := uxBindMountArgs(home, []string{".tmux.conf"}); len(got) != 0 {
+		t.Errorf("~/.ssh/..secret への symlink が bind mount された: %v", got)
+	}
+}
+
 func TestIsDeniedUXPath(t *testing.T) {
 	home := "/Users/x"
 	tests := []struct {

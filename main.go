@@ -213,7 +213,7 @@ func runWithDockerCheck(autoBuild bool, fn func() error) {
 			fmt.Fprintf(os.Stderr, "ccbox build --tag %q [--extra <path>] で作成してください。\n", ri)
 			os.Exit(1)
 		}
-		fmt.Fprintln(os.Stderr, "ccbox:latest イメージが見つかりません。自動ビルドを開始します...")
+		fmt.Fprintf(os.Stderr, "%s イメージが見つかりません。自動ビルドを開始します...\n", imageTag)
 		// 自動ビルドでも ~/.ccbox/extra.Dockerfile があれば拾う（拡張ユーザーの意図を尊重）
 		if err := buildImage(false, "", ""); err != nil {
 			fmt.Fprintln(os.Stderr, "エラー: イメージのビルドに失敗しました:", err)

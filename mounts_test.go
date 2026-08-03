@@ -285,6 +285,10 @@ func TestValidateMount_containerHomeReserved(t *testing.T) {
 		{"/home/ccbox/.ccbox/home（Path Traversal 風）",
 			"/home/ccbox/.ccbox/home", "予約領域"},
 		{"末尾スラッシュ", "/home/ccbox/", "コンテナホームそのもの"},
+		// 旧実装は filepath.Rel の "..evil" を HasPrefix(rel, "..") で
+		// 「/home/ccbox の外」と誤判定して予約領域への mount を通していた。
+		{"'..' で始まる名前", "/home/ccbox/..evil", "予約領域"},
+		{"'..' で始まる名前の深い階層", "/home/ccbox/..d/e", "予約領域"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
