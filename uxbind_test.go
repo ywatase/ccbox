@@ -154,6 +154,88 @@ func TestUXBindMountArgs_symlinkToDotdotNameInDenylistRejected(t *testing.T) {
 	}
 }
 
+// newSymlinkedDenylistHome は denylist 項目自体（~/.ssh）が home 外の実体への
+// シンボリックリンクになっている構成を作る。実体は home を配下に含まない場所に置き、
+// isUnsafeMountDir に先に捕まらないようにして denylist 判定そのものを検証する。
+func newSymlinkedDenylistHome(t *testing.T) (home, realSSH string) {
+	t.Helper()
+	root := t.TempDir()
+	home = filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0755); err != nil {
+		t.Fatal(err)
+	}
+	realSSH = filepath.Join(root, "vault", "real-ssh")
+	if err := os.MkdirAll(realSSH, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realSSH, "id_rsa"), []byte("PRIVATE KEY"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realSSH, filepath.Join(home, ".ssh")); err != nil {
+		t.Fatal(err)
+	}
+	return home, realSSH
+}
+
+func TestIsDeniedUXPath_denylistItemIsSymlink(t *testing.T) {
+	// denylist 項目自体が symlink（~/.ssh -> /vault/real-ssh）の場合、
+	// 候補パスは実体に解決されるため、字句上のパスとだけ比較すると対応が失われる。
+	// 字句・実体の両方を拒否対象に含めることで突き合わせる。
+	home, realSSH := newSymlinkedDenylistHome(t)
+	for _, p := range []string{
+		realSSH,                               // 実体そのもの
+		filepath.Join(realSSH, "id_rsa"),      // 実体の配下
+		filepath.Join(home, ".ssh"),           // 字句上のパス
+		filepath.Join(home, ".ssh", "id_rsa"), // 字句上のパスの配下
+	} {
+		if !isDeniedUXPath(p, home) {
+			t.Errorf("isDeniedUXPath(%q) = false, want true", p)
+		}
+	}
+}
+
+func TestUXBindMountArgs_symlinkIntoSymlinkedDenylistRejected(t *testing.T) {
+	// end-to-end: ~/.ssh 自体が外部 symlink でも、その配下へのリンクを bind しない。
+	home, _ := newSymlinkedDenylistHome(t)
+	if err := os.Symlink(filepath.Join(home, ".ssh", "id_rsa"), filepath.Join(home, ".tmux.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if got := uxBindMountArgs(home, []string{".tmux.conf"}); len(got) != 0 {
+		t.Errorf("symlink 化された ~/.ssh 配下が bind mount された: %v", got)
+	}
+}
+
+func TestDeniedAbsPaths_includesLexicalAndResolved(t *testing.T) {
+	home, realSSH := newSymlinkedDenylistHome(t)
+	got := deniedAbsPaths(home)
+	// macOS では t.TempDir() の /var/... が EvalSymlinks で /private/var/... に
+	// 正規化されるため、いずれかの表記で含まれていればよい。
+	for _, w := range []string{filepath.Join(home, ".ssh"), realSSH} {
+		found := false
+		for _, v := range pathVariants(w) {
+			if slices.Contains(got, v) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("deniedAbsPaths に %q（またはその実パス）が含まれない: %v", w, got)
+		}
+	}
+	// 存在しない項目でも字句上のパスは残る（将来作られた時点で拒否するため）
+	if !slices.Contains(got, filepath.Join(home, ".gnupg")) {
+		t.Errorf("存在しない denylist 項目の字句パスが欠落: %v", got)
+	}
+	// 重複しない
+	seen := map[string]int{}
+	for _, p := range got {
+		seen[p]++
+		if seen[p] > 1 {
+			t.Errorf("deniedAbsPaths に重複: %q", p)
+		}
+	}
+}
+
 func TestIsDeniedUXPath(t *testing.T) {
 	home := "/Users/x"
 	tests := []struct {

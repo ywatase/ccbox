@@ -89,9 +89,10 @@ func isWithin(base, target string) bool {
 //
 //	mountHost=~/.config/nvim は denied を配下に含まないので false（許可）
 func isolationDenylistCoveredBy(mountHost, mountHome string) bool {
-	for _, base := range denylistBases(mountHome) {
-		for _, denied := range isolationDenylist {
-			if isWithin(mountHost, filepath.Join(base, denied)) {
+	denied := deniedAbsPaths(mountHome)
+	for _, host := range pathVariants(mountHost) {
+		for _, d := range denied {
+			if isWithin(host, d) {
 				return true
 			}
 		}
@@ -99,18 +100,56 @@ func isolationDenylistCoveredBy(mountHost, mountHome string) bool {
 	return false
 }
 
-// isDeniedUXPath は resolvedPath（EvalSymlinks 済み絶対パス）が禁止リストに触れるかを判定する。
-func isDeniedUXPath(resolvedPath, home string) bool {
-	clean := filepath.Clean(resolvedPath)
-	for _, base := range denylistBases(home) {
-		for _, denied := range isolationDenylist {
-			deniedAbs := filepath.Clean(filepath.Join(base, denied))
-			if clean == deniedAbs || isWithin(deniedAbs, clean) {
+// isDeniedUXPath は candidate が禁止リストに触れるかを判定する。
+// candidate は EvalSymlinks 済みで渡すのが本来だが、解決漏れが即座に検査の
+// すり抜けになるため、関数側でも解決してから突き合わせる（冪等）。
+func isDeniedUXPath(candidate, home string) bool {
+	denied := deniedAbsPaths(home)
+	for _, c := range pathVariants(candidate) {
+		for _, d := range denied {
+			if c == d || isWithin(d, c) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// pathVariants は p の字句上のパスと EvalSymlinks 解決後の実パスを返す（重複時は 1 つ）。
+// macOS の /var → /private/var のようなシステム側の正規化や、呼び出し側の解決漏れを
+// 吸収して、どちらの表記で来ても同じ判定になるようにする。
+func pathVariants(p string) []string {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return dedupSlice(clean, filepath.Clean(resolved))
+	}
+	return []string{clean}
+}
+
+// deniedAbsPaths は isolationDenylist を絶対パスへ展開する。
+// 各項目について「字句上のパス」と「EvalSymlinks で解決した実パス」の両方を返す。
+// denylist 項目そのものがシンボリックリンク（例: ~/.ssh -> /vault/real-ssh）の場合、
+// mount source 側は実パスに解決されるため、字句上のパスとだけ比較すると対応が失われて
+// 隔離を回避できてしまう。実パス側も拒否対象に含めることで両者を突き合わせる。
+// 項目が存在しない場合は EvalSymlinks が失敗するが、字句上のパスは常に返すため
+// 「将来その項目が作られた時点で拒否する」保守的な挙動は維持される。
+func deniedAbsPaths(home string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, base := range denylistBases(home) {
+		for _, denied := range isolationDenylist {
+			for _, v := range pathVariants(filepath.Join(base, denied)) {
+				add(v)
+			}
+		}
+	}
+	return out
 }
 
 // denylistBases は denylist を展開する基点となるホームディレクトリ候補を返す。

@@ -268,6 +268,37 @@ func TestIsolationDenylistCoveredBy(t *testing.T) {
 	}
 }
 
+func TestValidateMount_symlinkedDenylistItem(t *testing.T) {
+	// denylist 項目自体が home 外へのシンボリックリンク（~/.ssh -> /vault/real-ssh）
+	// である構成。source は実体に解決されるため、denylist を字句上のパスとだけ
+	// 突き合わせると対応が失われ、mount add が通ってしまっていた。
+	home, realSSH := newSymlinkedDenylistHome(t)
+	tests := []struct {
+		name string
+		m    Mount
+	}{
+		{"symlink 側を指定", Mount{Host: filepath.Join(home, ".ssh"), Container: "/tmp/host-ssh", Readonly: true}},
+		{"実体側を直接指定", Mount{Host: realSSH, Container: "/tmp/host-ssh"}},
+		{"実体の配下を指定", Mount{Host: filepath.Join(realSSH, "id_rsa"), Container: "/tmp/k"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateMount(tt.m, home); err == nil {
+				t.Errorf("validateMount(%+v) = nil, want error", tt.m)
+			}
+		})
+	}
+}
+
+func TestValidateMount_ancestorOfSymlinkedDenylistTarget(t *testing.T) {
+	// denylist の実体を配下に含む祖先ディレクトリ（/vault）も拒否する。
+	home, realSSH := newSymlinkedDenylistHome(t)
+	vault := filepath.Dir(realSSH)
+	if err := validateMount(Mount{Host: vault}, home); err == nil {
+		t.Errorf("denylist 実体 %q を配下に含む %q の mount が許可された", realSSH, vault)
+	}
+}
+
 func TestValidateMount_containerHomeReserved(t *testing.T) {
 	home := t.TempDir()
 	sub := filepath.Join(home, "sub")
