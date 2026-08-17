@@ -48,7 +48,7 @@ func TestHostAlias(t *testing.T) {
 }
 
 func TestRenderHostEntry(t *testing.T) {
-	got := renderHostEntry("ccbox-myapp", "/usr/local/bin/ccbox", "/Users/foo/my app")
+	got := renderHostEntry("ccbox-myapp", "/usr/local/bin/ccbox", "/Users/foo/my app", "")
 	for _, want := range []string{
 		"Host ccbox-myapp\n",
 		"  User ccbox\n",
@@ -63,6 +63,28 @@ func TestRenderHostEntry(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderHostEntry に %q が含まれない:\n%s", want, got)
+		}
+	}
+	// image 非空のとき --image が ProxyCommand に含まれる（CCBOX_IMAGE の永続化）
+	got2 := renderHostEntry("ccbox-myapp", "/bin/ccbox", "/p", "ccbox:myextra")
+	wantImage := `  ProxyCommand "/bin/ccbox" ssh-proxy "/p" --image "ccbox:myextra"` + "\n"
+	if !strings.Contains(got2, wantImage) {
+		t.Errorf("renderHostEntry(image) に %q が含まれない:\n%s", wantImage, got2)
+	}
+}
+
+func TestValidateImageTag(t *testing.T) {
+	// ProxyCommand への埋め込み前にシェル特殊文字を弾く（validateSSHProjectPath と同じ思想）。
+	ok := []string{"ccbox:latest", "ccbox:myextra", "registry.example.com/ns/img:v1.2.3", "img"}
+	ng := []string{"", "img;rm -rf /", "img$(id)", "img`id`", "img\"quote", "img space", "img\n"}
+	for _, s := range ok {
+		if err := validateImageTag(s); err != nil {
+			t.Errorf("validateImageTag(%q) = %v, want nil", s, err)
+		}
+	}
+	for _, s := range ng {
+		if err := validateImageTag(s); err == nil {
+			t.Errorf("validateImageTag(%q) = nil, want error", s)
 		}
 	}
 }
@@ -96,7 +118,7 @@ func TestUpsertHostEntry(t *testing.T) {
 	cfg := filepath.Join(dir, "config")
 
 	// 新規追加
-	e1 := renderHostEntry("ccbox-myapp", "/bin/ccbox", "/p/myapp")
+	e1 := renderHostEntry("ccbox-myapp", "/bin/ccbox", "/p/myapp", "")
 	alias, err := upsertHostEntry(cfg, "ccbox-myapp", "/p/myapp", e1)
 	if err != nil || alias != "ccbox-myapp" {
 		t.Fatalf("新規追加に失敗: alias=%q err=%v", alias, err)
@@ -112,7 +134,7 @@ func TestUpsertHostEntry(t *testing.T) {
 	}
 
 	// 別パスで同名 → containerName にフォールバック
-	e2 := renderHostEntry("ccbox-myapp", "/bin/ccbox", "/q/myapp")
+	e2 := renderHostEntry("ccbox-myapp", "/bin/ccbox", "/q/myapp", "")
 	alias2, err := upsertHostEntry(cfg, "ccbox-myapp", "/q/myapp", e2)
 	if err != nil {
 		t.Fatal(err)

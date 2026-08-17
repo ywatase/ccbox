@@ -155,7 +155,7 @@ func TestBuildRunArgs_ttyMode(t *testing.T) {
 	// TTY モードでは -t と --sig-proxy=false が必須。
 	// sig-proxy が有効のままだとホスト側 SIGIO が転送されてコンテナ内プロセスが
 	// exit 157 で即死する（macOS + colima で実発生）。
-	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true)
+	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true, nil)
 	if !slices.Contains(args, "-t") {
 		t.Error("TTY モードで -t が付与されていない")
 	}
@@ -179,7 +179,7 @@ func TestBuildRunArgs_ttyMode(t *testing.T) {
 func TestBuildRunArgs_nonTTYMode(t *testing.T) {
 	// 非 TTY モードでは -t を付けず（docker が "not a TTY" で失敗するため）、
 	// Ctrl+C 転送に sig-proxy が必要なので --sig-proxy=false も付けない。
-	args := buildRunArgs("claude", []string{"-p", "hi"}, "/h/.ccbox/home", "/work", "xterm", false)
+	args := buildRunArgs("claude", []string{"-p", "hi"}, "/h/.ccbox/home", "/work", "xterm", false, nil)
 	if slices.Contains(args, "-t") {
 		t.Error("非 TTY モードで -t が付与されている")
 	}
@@ -277,6 +277,62 @@ func TestRunContainerRejectsColonInCcboxHome(t *testing.T) {
 	}
 }
 
+func TestRuntimeImage_default(t *testing.T) {
+	t.Setenv("CCBOX_IMAGE", "")
+	if got := runtimeImage(); got != imageTag {
+		t.Errorf("runtimeImage() = %q, want %q", got, imageTag)
+	}
+}
+
+func TestRuntimeImage_envOverride(t *testing.T) {
+	t.Setenv("CCBOX_IMAGE", "ccbox:myextra")
+	if got := runtimeImage(); got != "ccbox:myextra" {
+		t.Errorf("runtimeImage() = %q, want ccbox:myextra", got)
+	}
+}
+
+func TestCheckEnvImageTag(t *testing.T) {
+	// 入口で弾かないと、不正なタグが「ccbox build --tag <値>」のコピペ可能な
+	// コマンド例としてエラー出力に載り、コピペでシェル実行されてしまう。
+	tests := []struct {
+		name    string
+		env     string
+		wantErr bool
+	}{
+		{"未設定", "", false},
+		{"正常なタグ", "ccbox:myextra", false},
+		{"レジストリ付き", "registry.example.com/ns/img:v1", false},
+		{"コマンド置換", "ccbox:x$(touch /tmp/PWNED)", true},
+		{"バッククォート", "img`id`", true},
+		{"引用符ブレイク", `img" ; touch /tmp/PWNED ; echo "`, true},
+		{"改行", "img\nHost evil", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CCBOX_IMAGE", tt.env)
+			err := checkEnvImageTag()
+			if tt.wantErr && err == nil {
+				t.Errorf("checkEnvImageTag() = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("checkEnvImageTag() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestBuildRunArgs_runtimeImageOverride(t *testing.T) {
+	// CCBOX_IMAGE で --tag ビルドしたイメージを実行できるようにする（レビュー指摘の P2）。
+	t.Setenv("CCBOX_IMAGE", "ccbox:myextra")
+	args := buildRunArgs("bash", nil, "/h/.ccbox/home", "/work", "xterm", true, nil)
+	if !slices.Contains(args, "ccbox:myextra") {
+		t.Errorf("buildRunArgs did not use CCBOX_IMAGE: %v", args)
+	}
+	if slices.Contains(args, imageTag) {
+		t.Errorf("buildRunArgs still contains default imageTag: %v", args)
+	}
+}
+
 func TestParseArgs_newSubcommands(t *testing.T) {
 	tests := []struct {
 		name string
@@ -291,6 +347,10 @@ func TestParseArgs_newSubcommands(t *testing.T) {
 			dispatchResult{subcommand: "ssh"}},
 		{"ssh-proxy パス付き", []string{"ssh-proxy", "/path/to/proj"},
 			dispatchResult{subcommand: "ssh-proxy", claudeArgs: []string{"/path/to/proj"}}},
+		{"ssh-proxy --image 付き",
+			[]string{"ssh-proxy", "/path/to/proj", "--image", "ccbox:myextra"},
+			dispatchResult{subcommand: "ssh-proxy",
+				claudeArgs: []string{"/path/to/proj", "--image", "ccbox:myextra"}}},
 		{"ps", []string{"ps"},
 			dispatchResult{subcommand: "ps"}},
 		{"down パスなし", []string{"down"},

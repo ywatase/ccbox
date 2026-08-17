@@ -78,7 +78,13 @@ const includeLine = "Include ~/.ccbox/ssh/config"
 // ProxyCommand は App が起動する ssh から実行されるため絶対パスを引用符付きで埋め込む。
 // ControlMaster no はユーザーの多重化設定との相乗りを防ぐ（コンテナ再作成時に
 // stale master が残り、設定変更が反映されない事故を PoC で確認済み）。
-func renderHostEntry(alias, ccboxPath, projectPath string) string {
+// image が非空なら "--image <tag>" として ProxyCommand に含める。呼び出し側で
+// validateImageTag を通過していることを前提とする（シェル特殊文字を含まない）。
+func renderHostEntry(alias, ccboxPath, projectPath, image string) string {
+	proxyCmd := fmt.Sprintf("  ProxyCommand %q ssh-proxy %q", ccboxPath, projectPath)
+	if image != "" {
+		proxyCmd += fmt.Sprintf(" --image %q", image)
+	}
 	return "Host " + alias + "\n" +
 		"  User ccbox\n" +
 		"  IdentityFile ~/.ccbox/ssh/id_ed25519\n" +
@@ -88,7 +94,7 @@ func renderHostEntry(alias, ccboxPath, projectPath string) string {
 		"  ForwardX11 no\n" +
 		"  ControlMaster no\n" +
 		"  ControlPath none\n" +
-		fmt.Sprintf("  ProxyCommand %q ssh-proxy %q\n", ccboxPath, projectPath)
+		proxyCmd + "\n"
 }
 
 // upsertHostEntry は管理ファイル内の同名エントリを置換、無ければ追記する。
@@ -318,8 +324,17 @@ func cmdSSHRegister() error {
 		ccboxPath = resolved
 	}
 
+	// CCBOX_IMAGE を ProxyCommand に永続化する。env は SSH セッションを跨がないため、
+	// 登録時に文字列として ssh_config に埋め込むことで App/ssh からの起動時にも効かせる。
+	registeredImage := os.Getenv("CCBOX_IMAGE")
+	if registeredImage != "" {
+		if err := validateImageTag(registeredImage); err != nil {
+			return fmt.Errorf("CCBOX_IMAGE: %w", err)
+		}
+	}
+
 	alias := hostAlias(pwd)
-	entry := renderHostEntry(alias, ccboxPath, pwd)
+	entry := renderHostEntry(alias, ccboxPath, pwd, registeredImage)
 	managedConfig := filepath.Join(home, ".ccbox", "ssh", "config")
 	finalAlias, err := upsertHostEntry(managedConfig, alias, pwd, entry)
 	if err != nil {

@@ -22,20 +22,25 @@ func checkDocker() error {
 	return nil
 }
 
-// imageExists は ccbox:latest イメージの存在を確認する。
+// imageExists は実行対象イメージ（runtimeImage）が存在するか確認する。
 // ProxyCommand 経由（最小 PATH）でも動くよう docker は絶対パス解決する。
 func imageExists() bool {
 	dockerPath, err := findDocker()
 	if err != nil {
 		return false
 	}
-	return exec.Command(dockerPath, "image", "inspect", imageTag).Run() == nil
+	return exec.Command(dockerPath, "image", "inspect", runtimeImage()).Run() == nil
 }
 
 // buildImage は Dockerfile を stdin 経由で docker build に渡してイメージをビルドする。
 // noCache=true のとき --no-cache --pull を付与する。
-func buildImage(noCache bool) error {
-	args := []string{"build", "-t", imageTag}
+// extraPath は ~/.ccbox/extra.Dockerfile への明示指定パス（空=自動探索）。
+// tag は --tag <name>（空=imageTag デフォルト）。
+func buildImage(noCache bool, extraPath, tag string) error {
+	if tag == "" {
+		tag = imageTag
+	}
+	args := []string{"build", "-t", tag}
 	if noCache {
 		args = append(args, "--no-cache", "--pull")
 	}
@@ -50,11 +55,73 @@ func buildImage(noCache bool) error {
 	// コンテキスト不要なので stdin から Dockerfile を渡す（-f - -）
 	args = append(args, "-")
 
+	dockerfile, err := composeDockerfile(extraPath)
+	if err != nil {
+		return err
+	}
+
 	cmd := exec.Command("docker", args...)
-	cmd.Stdin = dockerfileContent()
+	cmd.Stdin = strings.NewReader(dockerfile)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// resolveExtraDockerfile は extra.Dockerfile のパスを解決する。
+// extraPath == "" のとき ~/.ccbox/extra.Dockerfile を自動探索。存在すれば (path, true, nil)、
+// 存在しなければ ("", false, nil)（拡張なしとして扱う）。
+// extraPath != "" のとき明示指定として存在確認し、無ければエラー。
+func resolveExtraDockerfile(extraPath string) (string, bool, error) {
+	if extraPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", false, fmt.Errorf("ホームディレクトリを取得できません: %w", err)
+		}
+		p := filepath.Join(home, ".ccbox", "extra.Dockerfile")
+		if _, err := os.Stat(p); err != nil {
+			if os.IsNotExist(err) {
+				return "", false, nil
+			}
+			return "", false, fmt.Errorf("%s を確認できません: %w", p, err)
+		}
+		return p, true, nil
+	}
+	if _, err := os.Stat(extraPath); err != nil {
+		return "", false, fmt.Errorf("--extra で指定された %s が読めません: %w", extraPath, err)
+	}
+	return extraPath, true, nil
+}
+
+// composeDockerfile は本体 Dockerfile と extra.Dockerfile を後方追記で連結した文字列を返す。
+// 追加ファイルを含めるビルドコンテキストは張らないため、extra.Dockerfile は RUN で完結
+// するもの（apt / curl 等でオンライン取得）を想定する。COPY 等ローカルファイル参照は動かない。
+func composeDockerfile(extraPath string) (string, error) {
+	base := string(embeddedDockerfile)
+	path, ok, err := resolveExtraDockerfile(extraPath)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return base, nil
+	}
+	extra, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s を読めません: %w", path, err)
+	}
+	fmt.Fprintf(os.Stderr, "拡張レイヤーを含めてビルド: %s\n", path)
+	var b strings.Builder
+	b.WriteString(base)
+	if !strings.HasSuffix(base, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n# ---- ccbox extra layer (source: ")
+	b.WriteString(path)
+	b.WriteString(") ----\n")
+	b.Write(extra)
+	if !strings.HasSuffix(string(extra), "\n") {
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
 
 // runClaude は ccbox:latest コンテナ内で claude を実行する。
@@ -123,7 +190,8 @@ func runContainer(entryCmd string, extraArgs []string) error {
 		term = "xterm-256color"
 	}
 
-	args := buildRunArgs(entryCmd, extraArgs, ccboxHome, pwd, term, isTTY())
+	uxBinds := uxBindMountArgs(home, uxWhitelistDefault)
+	args := buildRunArgs(entryCmd, extraArgs, ccboxHome, pwd, term, isTTY(), uxBinds)
 
 	cmd := exec.Command("docker", args...)
 	cmd.Stdin = os.Stdin
@@ -146,14 +214,7 @@ func runContainer(entryCmd string, extraArgs []string) error {
 func isUnsafeMountDir(pwd, home string) bool {
 	cleanPwd := filepath.Clean(pwd)
 	cleanHome := filepath.Clean(home)
-	if cleanPwd == cleanHome {
-		return true
-	}
-	rel, err := filepath.Rel(cleanPwd, cleanHome)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	return cleanPwd == cleanHome || isWithin(cleanPwd, cleanHome)
 }
 
 // buildRunArgs は docker run の引数列を構築する。
@@ -169,7 +230,7 @@ func isUnsafeMountDir(pwd, home string) bool {
 // 非 TTY モードでは Ctrl+C の転送に sig-proxy が必要なのでデフォルト（有効）のままにする。
 // --security-opt no-new-privileges は setuid バイナリ等によるコンテナ内権限昇格を防ぐ。
 // --pids-limit 1024 は fork bomb によるホスト資源枯渇を防ぎつつ、ビルドツールの並列 fork 余地を残す。
-func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool) []string {
+func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term string, tty bool, uxBinds []string) []string {
 	args := []string{"run", "--rm", "--init", "-i", "--security-opt", "no-new-privileges", "--pids-limit", "1024"}
 	if tty {
 		args = append(args, "-t", "--sig-proxy=false")
@@ -177,9 +238,14 @@ func buildRunArgs(entryCmd string, extraArgs []string, ccboxHome, pwd, term stri
 	args = append(args,
 		"-v", ccboxHome+":/home/ccbox",
 		"-v", pwd+":"+pwd,
+	)
+	// UX 設定の read-only bind mount（~/.ccbox/home の上に重ねる。read-only なので
+	// コンテナ側の書き込みはホストに反映されない）
+	args = append(args, uxBinds...)
+	args = append(args,
 		"-w", pwd,
 		"-e", "TERM="+term,
-		imageTag,
+		runtimeImage(),
 		entryCmd,
 	)
 	return append(args, extraArgs...)
