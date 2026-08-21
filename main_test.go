@@ -291,6 +291,40 @@ func TestRuntimeImage_envOverride(t *testing.T) {
 	}
 }
 
+func TestResolveVersion(t *testing.T) {
+	// go install <module>@vX.Y.Z 経路では -ldflags が渡らず version は "dev" のままに
+	// なるため、ビルド情報のバージョンを second source として使う。
+	tests := []struct {
+		name    string
+		ldflags string
+		build   string
+		want    string
+	}{
+		{"ldflags 指定が最優先", "v1.2.3", "v0.9.0", "v1.2.3"},
+		{"ldflags 未指定ならビルド情報", "dev", "v0.1.0", "v0.1.0"},
+		{"ビルド情報が疑似バージョンでも採用", "dev", "v0.0.0-20260817025914-8873c08106a3", "v0.0.0-20260817025914-8873c08106a3"},
+		{"(devel) は採用しない", "dev", "(devel)", "dev"},
+		{"ビルド情報が空なら既定値", "dev", "", "dev"},
+		{"両方空なら dev", "", "", "dev"},
+		{"ldflags 空でビルド情報あり", "", "v0.2.0", "v0.2.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveVersion(tt.ldflags, tt.build); got != tt.want {
+				t.Errorf("resolveVersion(%q, %q) = %q, want %q",
+					tt.ldflags, tt.build, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVersionString_notEmpty(t *testing.T) {
+	// テストバイナリでもビルド情報は取得できるため、空文字を返してはならない。
+	if got := versionString(); got == "" {
+		t.Error("versionString() が空文字を返した")
+	}
+}
+
 func TestCheckEnvImageTag(t *testing.T) {
 	// 入口で弾かないと、不正なタグが「ccbox build --tag <値>」のコピペ可能な
 	// コマンド例としてエラー出力に載り、コピペでシェル実行されてしまう。

@@ -6,11 +6,42 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strings"
 )
 
 // version は -ldflags "-X main.version=x.y.z" で上書き可能。
+// 上書きが無い場合はモジュールのビルド情報から解決する（versionString 参照）。
 var version = "dev"
+
+// versionString は表示用のバージョン文字列を返す。
+// go install github.com/ywatase/ccbox@vX.Y.Z 経路では -ldflags が渡らないため、
+// version 変数だけを見ると常に "dev" になる。モジュールのビルド情報には
+// インストール元のバージョン（タグ、または git チェックアウトの疑似バージョン）が
+// 埋め込まれているので、それを second source として使う。
+func versionString() string {
+	buildVersion := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		buildVersion = info.Main.Version
+	}
+	return resolveVersion(version, buildVersion)
+}
+
+// resolveVersion は -ldflags 由来の値とビルド情報由来の値から表示値を決める。
+// ldflags で明示指定された値を最優先し、次にビルド情報、どちらも無ければ既定値。
+// "(devel)" はビルド情報がバージョンを持たないことを示す Go の慣習値なので採用しない。
+func resolveVersion(ldflagsVersion, buildVersion string) string {
+	if ldflagsVersion != "" && ldflagsVersion != "dev" {
+		return ldflagsVersion
+	}
+	if buildVersion != "" && buildVersion != "(devel)" {
+		return buildVersion
+	}
+	if ldflagsVersion != "" {
+		return ldflagsVersion
+	}
+	return "dev"
+}
 
 // imageTag は build のデフォルトタグ。CCBOX_IMAGE が実行時のみ効くのは、
 // 「build 出力先」と「実行対象」を混ぜないため（ビルドは常に既知タグに集約）。
@@ -185,7 +216,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println("ccbox", version)
+		fmt.Println("ccbox", versionString())
 	case "help":
 		printHelp()
 	default:
