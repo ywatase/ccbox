@@ -52,6 +52,8 @@ cd ccbox
 go build -o ccbox .
 ```
 
+`ccbox version` はインストール元のバージョンを表示する。`go install` 経路ではモジュールのバージョン（タグ、またはタグが無ければ疑似バージョン）、`-ldflags "-X main.version=x.y.z"` を付けたビルドではその値が優先される。
+
 ## 初回認証
 
 初回は OAuth ログインが必要です。
